@@ -128,11 +128,20 @@ curl -sfL https://get.k3s.io | sudo env \
   K3S_TOKEN='Server_Token' \
   sh -s - agent \
   --node-name nindan-k3-worker \
-  --node-ip 192.168.1.72
+  --node-ip 192.168.1.80
 
 ```
 
 Replace `<PASTE_NODE_TOKEN_HERE>` with the token retrieved from the server. Do not type the angle brackets literally.
+
+To support Kubectl command on worker node:
+```bash
+scp /etc/rancher/k3s/k3s.yaml kubernet@192.168.1.80:/tmp/k3s.yaml
+mkdir -p $HOME/.kube
+sudo mv /tmp/k3s.yaml $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+sudo sed -i 's/127.0.0.1/192.168.1.100/g' $HOME/.kube/config
+```
 
 Check the agent service on the worker:
 
