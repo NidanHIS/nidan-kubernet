@@ -1,0 +1,427 @@
+# ============================================================
+# 1. OPENMRS CONFIG
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openmrs-config
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  OPENMRS_DB_NAME: "openmrs"
+  OPENMRS_DB_USER: "openmrs"
+  OMRS_DB: "mysql"
+  OMRS_DB_HOSTNAME: "openmrs-db"
+  OMRS_DB_PORT: "3306"
+  OMRS_DB_DRIVER_CLASS: "com.mysql.cj.jdbc.Driver"
+  OMRS_CONFIG_MODULE_WEB_ADMIN: "true"
+  OMRS_CONFIG_AUTO_UPDATE_DATABASE: "true"
+  OMRS_CONFIG_CREATE_TABLES: "true"
+  OMRS_CONFIG_HAS_CURRENT_OPENMRS_DATABASE: "true"
+  OMRS_JAVA_MEMORY_OPTS: "-Xmx512m -Xms256m"
+  _JAVA_OPTIONS: "-Dcsrf.enabled=false"
+
+---
+# ============================================================
+# 2. OPENMRS DATABASE SECRET
+# ============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openmrs-secret
+  namespace: {{ include "nidan.namespace" . }}
+type: Opaque
+stringData:
+  OPENMRS_DB_PASSWORD: "openmrs"
+  OPENMRS_DB_ROOT_PASSWORD: "openmrs"
+
+---
+# ============================================================
+# 3. OPENMRS DATABASE SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: openmrs-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: openmrs-db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+
+---
+# ============================================================
+# 4. OPENMRS DATABASE
+# ============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openmrs-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  serviceName: openmrs-db
+  replicas: {{ .Values.openmrs.db.replicas }}
+  selector:
+    matchLabels:
+      app: openmrs-db
+  template:
+    metadata:
+      labels:
+        app: openmrs-db
+    spec:
+      containers:
+        - name: openmrs-db
+          image: "{{ .Values.openmrs.db.image.repository }}:{{ .Values.openmrs.db.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--character-set-server=utf8mb4"
+            - "--collation-server=utf8mb4_unicode_ci"
+            - "--log-bin=mysql-bin"
+            - "--binlog_format=ROW"
+            - "--server-id=1"
+            - "--binlog_row_image=FULL"
+            - "--max-allowed-packet=512M"
+          ports:
+            - name: mysql
+              containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OPENMRS_DB_NAME
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OPENMRS_DB_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openmrs-secret
+                  key: OPENMRS_DB_PASSWORD
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openmrs-secret
+                  key: OPENMRS_DB_ROOT_PASSWORD
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  mysqladmin ping \
+                    -h 127.0.0.1 \
+                    -u root \
+                    -p"$MYSQL_ROOT_PASSWORD"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  mysqladmin ping \
+                    -h 127.0.0.1 \
+                    -u root \
+                    -p"$MYSQL_ROOT_PASSWORD"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: openmrs-db-data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: openmrs-db-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 30Gi
+
+---
+# ============================================================
+# 5. OPENMRS BACKEND SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: openmrs-backend
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  selector:
+    app: openmrs-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+---
+# ============================================================
+# 6. OPENMRS BACKEND
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openmrs-backend
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  replicas: {{ .Values.openmrs.backend.replicas }}
+  selector:
+    matchLabels:
+      app: openmrs-backend
+  template:
+    metadata:
+      labels:
+        app: openmrs-backend
+    spec:
+      initContainers:
+        - name: fix-openmrs-permissions
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Before.."
+              ls -ldn /openmrs/data
+              ls -ldn /openmrs/data/modules 2>/dev/null || true
+              mkdir -p /openmrs/data/modules
+              chown -R 1001:0 /openmrs/data
+              chmod -R u+rwX /openmrs/data
+              echo "OpenMRS permissions fixed."
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: openmrs-data
+              mountPath: /openmrs/data
+        - name: wait-for-mysql
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for OpenMRS MySQL..."
+              until nc -z openmrs-db 3306
+              do
+                echo "MySQL not ready..."
+                sleep 3
+              done
+              echo "MySQL is available."
+      containers:
+        - name: openmrs-backend
+          image: "{{ .Values.openmrs.backend.image.repository }}:{{ .Values.openmrs.backend.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: OMRS_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_DB
+            - name: OMRS_DB_HOSTNAME
+              value: "openmrs-db"
+            - name: OMRS_DB_PORT
+              value: "3306"
+            - name: OMRS_DB_URL
+              value: >-
+                jdbc:mysql://openmrs-db:3306/openmrs?useUnicode=true&characterEncoding=UTF-8&sessionVariables=storage_engine=InnoDB
+            - name: OMRS_DB_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OPENMRS_DB_USER
+            - name: OMRS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openmrs-secret
+                  key: OPENMRS_DB_PASSWORD
+            - name: OMRS_DB_DRIVER_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_DB_DRIVER_CLASS
+            - name: OMRS_CONFIG_MODULE_WEB_ADMIN
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_CONFIG_MODULE_WEB_ADMIN
+            - name: OMRS_CONFIG_AUTO_UPDATE_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_CONFIG_AUTO_UPDATE_DATABASE
+            - name: OMRS_CONFIG_CREATE_TABLES
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_CONFIG_CREATE_TABLES
+            - name: OMRS_CONFIG_HAS_CURRENT_OPENMRS_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_CONFIG_HAS_CURRENT_OPENMRS_DATABASE
+            - name: OMRS_JAVA_MEMORY_OPTS
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: OMRS_JAVA_MEMORY_OPTS
+            - name: _JAVA_OPTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: openmrs-config
+                  key: _JAVA_OPTIONS
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          startupProbe:
+            httpGet:
+              path: /openmrs/
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /openmrs/
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /openmrs/
+              port: 8080
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: openmrs-data
+              mountPath: /openmrs/data
+      volumes:
+        - name: openmrs-data
+          persistentVolumeClaim:
+            claimName: openmrs-data
+
+---
+# ============================================================
+# 7. OPENMRS DATA PVC
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openmrs-data
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+# ============================================================
+# 8. OPENMRS FRONTEND SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: openmrs-frontend
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: openmrs-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+
+---
+# ============================================================
+# 9. OPENMRS FRONTEND
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openmrs-frontend
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  replicas: {{ .Values.openmrs.frontend.replicas }}
+  selector:
+    matchLabels:
+      app: openmrs-frontend
+  template:
+    metadata:
+      labels:
+        app: openmrs-frontend
+    spec:
+      containers:
+        - name: openmrs-frontend
+          image: "{{ .Values.openmrs.frontend.image.repository }}:{{ .Values.openmrs.frontend.image.tag }}"
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            - name: SPA_PATH
+              value: "/openmrs/spa"
+            - name: API_URL
+              value: "/openmrs"
+            - name: SPA_CONFIG_URLS
+              value: "/openmrs/spa/config-core_demo.json"
+          readinessProbe:
+            httpGet:
+              path: /index.html
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /index.html
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

@@ -1,0 +1,438 @@
+{{- if .Values.nidanDhis2.enabled }}
+# ------------------------------------------------------------
+# 1. ConfigMap — non-secret DHIS2 settings
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nidan-dhis2-config
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  DEBUG: "false"
+  FLASK_ENV: "production"
+
+  DHIS2_DB_HOST: "nidan-dhis2-db"
+  DHIS2_DB_PORT: "3306"
+  DHIS2_DB_NAME: "nidan_dhis2"
+  DHIS2_DB_USER: "nidan"
+  DHIS2_DB_CONNECT_TIMEOUT: "10"
+  DHIS2_DB_DATE_OVERLAP_BUFFER_DAYS: "2"
+
+  AUTH_PROVIDER: "env_file"
+  ADMIN_USERNAME: "admin"
+  REPORTER_USERNAME: "reporter"
+
+  OPENMRS_DB_HOST: "openmrs-db"
+  OPENMRS_DB_PORT: "3306"
+  OPENMRS_DB_NAME: "openmrs"
+  OPENMRS_DB_USER: "openmrs"
+
+  OPENELIS_DB_HOST: "openelis-db"
+  OPENELIS_DB_PORT: "5432"
+  OPENELIS_DB_NAME: "clinlims"
+  OPENELIS_DB_USER: "clinlims"
+
+  ODOO_DB_HOST: "odoo-db"
+  ODOO_DB_PORT: "5432"
+  ODOO_DB_NAME: "nidan"
+  ODOO_DB_USER: "nidan"
+
+  FEDERAL_HMIS_URL: "https://hmis.gov.np/hmisdemo"
+  FEDERAL_HMIS_USERNAME: "demo"
+  FEDERAL_HMIS_SSL_VERIFY: "false"
+  FEDERAL_HMIS_ORG_UNIT: "AppleBall"
+
+  PROVINCIAL_DHIS2_URL: ""
+  PROVINCIAL_DHIS2_USERNAME: ""
+  PROVINCIAL_DHIS2_SSL_VERIFY: "true"
+  PROVINCIAL_DHIS2_ORG_UNIT: ""
+
+---
+# ------------------------------------------------------------
+# 2. Secret — passwords and secret key
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nidan-dhis2-secret
+  namespace: {{ include "nidan.namespace" . }}
+type: Opaque
+stringData:
+  SECRET_KEY: "5f2b6d8b53d1cf7f00790a4b7d697ab7002e8b953e5d2637c96f27c083029b7d"
+  DHIS2_DB_PASSWORD: "nidan"
+  DHIS2_DB_ROOT_PASSWORD: "nidan_root"
+  ADMIN_PASSWORD: "Admin@123#!"
+  REPORTER_PASSWORD: "User@123#!"
+  OPENMRS_DB_PASSWORD: "openmrs"
+  OPENELIS_DB_PASSWORD: "clinlims"
+  ODOO_DB_PASSWORD: "nidan"
+  FEDERAL_HMIS_PASSWORD: "demo"
+  PROVINCIAL_DHIS2_PASSWORD: ""
+
+---
+# ------------------------------------------------------------
+# 3. Service — nidan-dhis2-db (MySQL)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-dhis2-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-dhis2-db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+
+---
+# ------------------------------------------------------------
+# 4. StatefulSet — nidan-dhis2-db
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nidan-dhis2-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  serviceName: nidan-dhis2-db
+  replicas: {{ .Values.nidanDhis2.db.replicas }}
+  selector:
+    matchLabels:
+      app: nidan-dhis2-db
+  template:
+    metadata:
+      labels:
+        app: nidan-dhis2-db
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: nidan-dhis2-db
+          image: "{{ .Values.nidanDhis2.db.image.repository }}:{{ .Values.nidanDhis2.db.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--character-set-server=utf8mb4"
+            - "--collation-server=utf8mb4_unicode_ci"
+          ports:
+            - name: mysql
+              containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              valueFrom: { configMapKeyRef: { name: nidan-dhis2-config, key: DHIS2_DB_NAME } }
+            - name: MYSQL_USER
+              valueFrom: { configMapKeyRef: { name: nidan-dhis2-config, key: DHIS2_DB_USER } }
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef:    { name: nidan-dhis2-secret, key: DHIS2_DB_PASSWORD } }
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom: { secretKeyRef:    { name: nidan-dhis2-secret, key: DHIS2_DB_ROOT_PASSWORD } }
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD"
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -u "$MYSQL_USER" -p"$MYSQL_PASSWORD"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "2Gi" }
+          volumeMounts:
+            - name: nidan-dhis2-db-data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: nidan-dhis2-db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# ------------------------------------------------------------
+# 5. Service — nidan-dhis2 (ClusterIP)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-dhis2
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-dhis2
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+
+---
+# ------------------------------------------------------------
+# 5b. Service — nidan-dhis2-nodeport
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-dhis2-nodeport
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: NodePort
+  selector:
+    app: nidan-dhis2
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      nodePort: 30053
+
+---
+# ------------------------------------------------------------
+# 6. Deployment — nidan-dhis2
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nidan-dhis2
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  replicas: {{ .Values.nidanDhis2.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nidan-dhis2
+  template:
+    metadata:
+      labels:
+        app: nidan-dhis2
+    spec:
+      enableServiceLinks: false
+
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: "OnRootMismatch"
+
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Fixing ownership on /app/* mount points..."
+              for dir in /app/mappings /app/connections /app/sql \
+                         /app/data /app/audit_logs /app/logs; do
+                mkdir -p "$dir"
+                chown -R 1000:0 "$dir"
+                chmod -R u+rwX,g+rwX "$dir"
+                echo "  fixed: $dir"
+              done
+              echo "Done."
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: dhis2-mappings
+              mountPath: /app/mappings
+            - name: dhis2-connections
+              mountPath: /app/connections
+            - name: dhis2-sql
+              mountPath: /app/sql
+            - name: dhis2-data
+              mountPath: /app/data
+            - name: dhis2-audit-logs
+              mountPath: /app/audit_logs
+            - name: dhis2-app-logs
+              mountPath: /app/logs
+
+        - name: wait-for-dhis2-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for nidan-dhis2-db:3306..."
+              until nc -z nidan-dhis2-db 3306; do sleep 3; done
+              echo "nidan-dhis2-db is up."
+        - name: wait-for-openmrs-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for openmrs-db:3306..."
+              until nc -z openmrs-db 3306; do sleep 3; done
+              echo "openmrs-db is up."
+        - name: wait-for-odoo-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for odoo-db:5432..."
+              until nc -z odoo-db 5432; do sleep 3; done
+              echo "odoo-db is up."
+
+      containers:
+        - name: nidan-dhis2
+          image: "{{ .Values.nidanDhis2.image.repository }}:{{ .Values.nidanDhis2.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: nidan-dhis2-config
+            - secretRef:
+                name: nidan-dhis2-secret
+          env:
+            - name: DATABASE_URL
+              value: "mysql+pymysql://nidan:nidan@nidan-dhis2-db:3306/nidan_dhis2"
+            - name: OPENMRS_DB_URL
+              value: "mysql+pymysql://openmrs:openmrs@openmrs-db:3306/openmrs"
+            - name: OPENELIS_DB_URL
+              value: "postgresql://clinlims:clinlims@openelis-db:5432/clinlims"
+            - name: ODOO_DB_URL
+              value: "postgresql://nidan:nidan@odoo-db:5432/nidan"
+          startupProbe:
+            tcpSocket: { port: 5000 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket: { port: 5000 }
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            tcpSocket: { port: 5000 }
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "2Gi" }
+          volumeMounts:
+            - name: dhis2-mappings
+              mountPath: /app/mappings
+            - name: dhis2-connections
+              mountPath: /app/connections
+            - name: dhis2-sql
+              mountPath: /app/sql
+            - name: dhis2-data
+              mountPath: /app/data
+            - name: dhis2-audit-logs
+              mountPath: /app/audit_logs
+            - name: dhis2-app-logs
+              mountPath: /app/logs
+      volumes:
+        - name: dhis2-mappings
+          persistentVolumeClaim: { claimName: dhis2-mappings }
+        - name: dhis2-connections
+          persistentVolumeClaim: { claimName: dhis2-connections }
+        - name: dhis2-sql
+          persistentVolumeClaim: { claimName: dhis2-sql }
+        - name: dhis2-data
+          persistentVolumeClaim: { claimName: dhis2-data }
+        - name: dhis2-audit-logs
+          persistentVolumeClaim: { claimName: dhis2-audit-logs }
+        - name: dhis2-app-logs
+          persistentVolumeClaim: { claimName: dhis2-app-logs }
+
+---
+# ------------------------------------------------------------
+# 7. PVCs
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dhis2-mappings
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dhis2-connections
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dhis2-sql
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dhis2-data
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dhis2-audit-logs
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dhis2-app-logs
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+{{- end }}

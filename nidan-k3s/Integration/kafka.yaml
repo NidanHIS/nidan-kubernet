@@ -1,0 +1,217 @@
+# ============================================================
+# NIDAN Zookeeper + Kafka — Kubernetes manifest
+# Namespace: nidan
+# ------------------------------------------------------------
+# Translated from docker-compose:
+#   nidan-zookeeper  (confluentinc/cp-zookeeper:7.5.0)
+#   nidan-kafka      (confluentinc/cp-kafka:7.5.0)
+#
+# Deploy:
+#   kubectl apply -f nidan-kafka.yaml -n nidan
+#
+# CRITICAL:
+#   - Do NOT set KAFKA_PORT as an env var. The Confluent Kafka
+#     entrypoint rejects it with "port is deprecated. Please
+#     use KAFKA_ADVERTISED_LISTENERS instead." and exits.
+#   - enableServiceLinks: false on both pods, otherwise
+#     Kubernetes injects KAFKA_PORT from the kafka Service.
+#
+# Changes vs previous version:
+#   - Kafka readiness/liveness probes swapped from exec
+#     (kafka-broker-api-versions) to tcpSocket: 9092.
+#     The exec probe was flaky during broker startup; a TCP
+#     probe is simpler and reflects "the broker is listening".
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. ConfigMap — Zookeeper + Kafka tuning
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nidan-kafka-config
+  namespace: nidan
+data:
+  # --- Zookeeper ---
+  ZOOKEEPER_CLIENT_PORT: "2181"
+  ZOOKEEPER_TICK_TIME: "2000"
+  ZOOKEEPER_HEAP_OPTS: "-Xmx256m -Xms256m"
+
+  # --- Kafka ---
+  KAFKA_BROKER_ID: "1"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+  KAFKA_MIN_INSYNC_REPLICAS: "1"
+  KAFKA_HEAP_OPTS: "-Xmx768m -Xms768m"
+  KAFKA_JVM_PERFORMANCE_OPTS: "-XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:+ExitOnOutOfMemoryError"
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "3000"
+  KAFKA_NUM_NETWORK_THREADS: "8"
+  KAFKA_NUM_IO_THREADS: "8"
+  KAFKA_SOCKET_SEND_BUFFER_BYTES: "102400"
+  KAFKA_SOCKET_RECEIVE_BUFFER_BYTES: "102400"
+  KAFKA_SOCKET_REQUEST_MAX_BYTES: "104857600"
+  KAFKA_REPLICA_SOCKET_TIMEOUT_MS: "60000"
+  KAFKA_CONTROLLER_SOCKET_TIMEOUT_MS: "60000"
+
+---
+# ------------------------------------------------------------
+# 2. Service — nidan-zookeeper
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-zookeeper
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-zookeeper
+  ports:
+    - name: client
+      port: 2181
+      targetPort: 2181
+
+---
+# ------------------------------------------------------------
+# 3. Deployment — nidan-zookeeper
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nidan-zookeeper
+  namespace: nidan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nidan-zookeeper
+  template:
+    metadata:
+      labels:
+        app: nidan-zookeeper
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: nidan-zookeeper
+          image: confluentinc/cp-zookeeper:7.5.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: client
+              containerPort: 2181
+          envFrom:
+            - configMapRef:
+                name: nidan-kafka-config
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "cub zk-ready localhost:2181 10"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 15
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "cub zk-ready localhost:2181 10"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 15
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+
+---
+# ------------------------------------------------------------
+# 4. Service — nidan-kafka
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-kafka
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-kafka
+  ports:
+    - name: broker
+      port: 9092
+      targetPort: 9092
+
+---
+# ------------------------------------------------------------
+# 5. Deployment — nidan-kafka
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nidan-kafka
+  namespace: nidan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nidan-kafka
+  template:
+    metadata:
+      labels:
+        app: nidan-kafka
+    spec:
+      enableServiceLinks: false       # <-- critical (see header)
+      initContainers:
+        - name: wait-for-zookeeper
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for nidan-zookeeper:2181..."
+              until nc -z nidan-zookeeper 2181; do
+                echo "  still waiting..."
+                sleep 3
+              done
+              echo "zookeeper is up."
+      containers:
+        - name: nidan-kafka
+          image: confluentinc/cp-kafka:7.5.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: broker
+              containerPort: 9092
+          envFrom:
+            - configMapRef:
+                name: nidan-kafka-config
+          env:
+            # Values that reference other hosts, kept out of the
+            # shared ConfigMap so they can be changed per-cluster.
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "nidan-zookeeper:2181"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://nidan-kafka:9092"
+            # NOTE: KAFKA_PORT is intentionally NOT set — see header.
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "2Gi" }

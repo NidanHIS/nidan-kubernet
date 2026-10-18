@@ -1,0 +1,517 @@
+# ============================================================
+# OpenELIS + NIDAN Integration — Kubernetes manifest (v2)
+# Namespace: nidan
+# ------------------------------------------------------------
+# Fixes vs. previous version:
+#   1. CRITICAL: /var/lib/openelis-global is now a single PVC
+#      (not 7 read-only ConfigMaps). OpenELIS writes to
+#      configuration/backend/tests-checksums.properties and
+#      other runtime files under this tree; read-only mounts
+#      cause "No such file or directory" errors on first boot.
+#   2. ConfigMap/Secret mounts removed from /var/lib/openelis-global/*.
+#      You populate the PVC once with `kubectl cp` after the pod
+#      starts (see instructions below the YAML).
+#   3. All other fixes from v1 preserved (DB superuser, probes).
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. ConfigMap — non-secret environment values
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openelis-config
+  namespace: nidan
+data:
+  OPENELIS_DB_NAME: "clinlims"
+  OPENELIS_DB_USER: "clinlims"
+  OPENELIS_DB_PORT: "5432"
+  OPENELIS_TZ: "UTC"
+  OPENELIS_DEFAULT_ADMIN_PASSWORD: "adminADMIN!"
+  CIS_BASE_URL: "http://nidan-cis:8081"
+  OPENELIS_MIDDLEWARE_TEST_SYNC_ENABLED: "false"
+  OPENELIS_MIDDLEWARE_SYNC_SECRET: "change-me"
+  OPENELIS_MIDDLEWARE_RESULT_SYNC_ENABLED: "true"
+  OPENELIS_NIDAN_TESTORDER_ENABLED: "true"
+  OPENELIS_NIDAN_PAYWALL_ENABLED: "true"
+  NIDANCORE_ODOO_URL: "http://odoo:8069"
+  OPENELIS_NIDAN_PAYWALL_INSURANCE_BYPASS: "true"
+  NIDAN_ODOO_SECRET: "sample"
+  INTEGRATION_DB_NAME: "nidan_integration"
+  INTEGRATION_DB_USER: "nidan"
+
+---
+# ------------------------------------------------------------
+# 2. Secret — passwords
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openelis-secret
+  namespace: nidan
+type: Opaque
+stringData:
+  OPENELIS_DB_PASSWORD: "clinlims"
+  INTEGRATION_DB_PASSWORD: "nidan"
+
+---
+# ------------------------------------------------------------
+# 3. Service — openelis-db
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: openelis-db
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: openelis-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# ------------------------------------------------------------
+# 4. StatefulSet — openelis-db
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openelis-db
+  namespace: nidan
+spec:
+  serviceName: openelis-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openelis-db
+  template:
+    metadata:
+      labels:
+        app: openelis-db
+    spec:
+      containers:
+        - name: openelis-db
+          image: trigonaltechnology/openelis-global-2-database:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "clinlims"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openelis-secret
+                  key: OPENELIS_DB_PASSWORD
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openelis-secret
+                  key: OPENELIS_DB_PASSWORD
+            - name: DB_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openelis-secret
+                  key: OPENELIS_DB_PASSWORD
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U postgres -d clinlims
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U postgres -d clinlims
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "3Gi" }
+          volumeMounts:
+            - name: openelis-db-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: openelis-db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# ------------------------------------------------------------
+# 5. Service — openelis (backend)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: openelis
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: openelis
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+
+---
+# ------------------------------------------------------------
+# 6. Deployment — openelis (backend)
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openelis
+  namespace: nidan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openelis
+  template:
+    metadata:
+      labels:
+        app: openelis
+    spec:
+      securityContext:
+        fsGroup: 8444            # tomcat group
+        fsGroupChangePolicy: "OnRootMismatch"
+
+      initContainers:
+        - name: wait-for-openelis-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for openelis-db:5432..."
+              until nc -z openelis-db 5432; do
+                echo "  still waiting..."
+                sleep 3
+              done
+              echo "openelis-db is up."
+
+        - name: wait-for-schema
+          image: postgres:15
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openelis-secret
+                  key: OPENELIS_DB_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for clinlims.login_user to exist..."
+              until psql -h openelis-db -U postgres -d clinlims -tAc "
+                SELECT count(*) FROM information_schema.tables
+                WHERE table_schema='clinlims' AND table_name='login_user';" 2>/dev/null | grep -q '^1$'; do
+                echo "  schema not ready, still waiting..."
+                sleep 5
+              done
+              echo "Base schema is ready."
+
+        - name: create-clinlims-schema
+          image: postgres:15
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openelis-secret
+                  key: OPENELIS_DB_PASSWORD
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              psql -h openelis-db -U postgres -d clinlims \
+                -c "CREATE SCHEMA IF NOT EXISTS clinlims AUTHORIZATION clinlims;"
+              psql -h openelis-db -U postgres -d clinlims \
+                -c "GRANT ALL ON SCHEMA clinlims TO clinlims;"
+              echo "Schema clinlims is ready."
+
+        # Ensure the /var/lib/openelis-global directories exist
+        # and are writable by the tomcat user.
+        - name: prep-openelis-volume
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Preparing /var/lib/openelis-global..."
+              for dir in \
+                analyzer branding certs \
+                configuration \
+                configuration/backend \
+                configuration/backend/ocl \
+                ocl odoo plugins properties logs; do
+                mkdir -p "/var/lib/openelis-global/$dir"
+                chmod -R 775 /var/lib/openelis-global
+                chown -R 8443:8444 "/var/lib/openelis-global/$dir"
+                chmod -R u+rwX,g+rwX "/var/lib/openelis-global/$dir"
+              done
+              echo "Prepared."
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: openelis-volume
+              mountPath: /var/lib/openelis-global
+
+        - name: seed-ocl-imports
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              TARGET=/var/lib/openelis-global/configuration/backend/ocl
+              mkdir -p "$TARGET"
+              for f in /src/*; do
+                [ -f "$f" ] || continue
+                base=$(basename "$f")
+                if [ ! -f "$TARGET/$base" ] || ! cmp -s "$f" "$TARGET/$base"; then
+                  cp "$f" "$TARGET/$base"
+                  chown 8443:8444 "$TARGET/$base" 2>/dev/null || true
+                  chmod 664        "$TARGET/$base" 2>/dev/null || true
+                  echo "seeded $base"
+                fi
+              done
+              ls -l "$TARGET"
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: openelis-ocl-src
+              mountPath: /src
+              readOnly: true
+            - name: openelis-volume
+              mountPath: /var/lib/openelis-global
+
+      containers:
+        - name: openelis
+          image: trigonaltechnology/openelis-global-2:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DEFAULT_PW
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_DEFAULT_ADMIN_PASSWORD } }
+            - name: TZ
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_TZ } }
+            - name: ODOO_ENABLED
+              value: "false"
+            - name: ORG_OPENELISGLOBAL_ODOO_ENABLED
+              value: "false"
+            - name: OPENELIS_ENABLE_HTTPS
+              value: "false"
+            - name: OPENELIS_DB_NAME
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_DB_NAME } }
+            - name: OPENELIS_DB_USER
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_DB_USER } }
+            - name: OPENELIS_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: openelis-secret, key: OPENELIS_DB_PASSWORD } }
+            - name: OPENELIS_MIDDLEWARE_TEST_SYNC_ENABLED
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_MIDDLEWARE_TEST_SYNC_ENABLED } }
+            - name: OPENELIS_MIDDLEWARE_SYNC_SECRET
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_MIDDLEWARE_SYNC_SECRET } }
+            - name: OPENELIS_MIDDLEWARE_RESULT_SYNC_ENABLED
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_MIDDLEWARE_RESULT_SYNC_ENABLED } }
+            - name: OPENELIS_NIDAN_TESTORDER_ENABLED
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_NIDAN_TESTORDER_ENABLED } }
+            - name: OPENELIS_NIDAN_PAYWALL_ENABLED
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_NIDAN_PAYWALL_ENABLED } }
+            - name: OPENELIS_NIDAN_PAYWALL_INSURANCE_BYPASS
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: OPENELIS_NIDAN_PAYWALL_INSURANCE_BYPASS } }
+            - name: NIDANCORE_ODOO_URL
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: NIDANCORE_ODOO_URL } }
+            - name: NIDAN_ODOO_SECRET
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: NIDAN_ODOO_SECRET } }
+            - name: CIS_BASE_URL
+              valueFrom: { configMapKeyRef: { name: openelis-config, key: CIS_BASE_URL } }
+            - name: CATALINA_OPTS
+              value: >-
+                -Ddatasource.url=jdbc:postgresql://openelis-db:5432/$(OPENELIS_DB_NAME)
+                -Ddatasource.username=$(OPENELIS_DB_USER)
+                -Ddatasource.password=$(OPENELIS_DB_PASSWORD)
+                -Dorg.openelisglobal.middleware.test.sync.enabled=$(OPENELIS_MIDDLEWARE_TEST_SYNC_ENABLED)
+                -Dorg.openelisglobal.middleware.test.sync.url=$(CIS_BASE_URL)/openelis/catalog/lab-test-definition
+                -Dorg.openelisglobal.middleware.test.sync.secret=$(OPENELIS_MIDDLEWARE_SYNC_SECRET)
+                -Dorg.openelisglobal.middleware.result.sync.enabled=$(OPENELIS_MIDDLEWARE_RESULT_SYNC_ENABLED)
+                -Dorg.openelisglobal.middleware.result.sync.url=$(CIS_BASE_URL)/openelis/lab-result
+                -Dorg.openelisglobal.middleware.result.sync.secret=$(OPENELIS_MIDDLEWARE_SYNC_SECRET)
+                -Dorg.openelisglobal.nidan.testorder.enabled=$(OPENELIS_NIDAN_TESTORDER_ENABLED)
+                -Dorg.openelisglobal.nidan.testorder.url=$(CIS_BASE_URL)/openelis/sample-collected
+                -Dorg.openelisglobal.nidan.paywall.enabled=$(OPENELIS_NIDAN_PAYWALL_ENABLED)
+                -Dorg.openelisglobal.nidan.paywall.odoo.url=$(NIDANCORE_ODOO_URL)
+                -Dorg.openelisglobal.nidan.paywall.odoo.secret=$(NIDAN_ODOO_SECRET)
+                -Dorg.openelisglobal.nidan.paywall.insurance.bypass=$(OPENELIS_NIDAN_PAYWALL_INSURANCE_BYPASS)
+                -Dorg.openelisglobal.nidan.cisretry.list.url=$(CIS_BASE_URL)/api/dead-letters
+                -Dorg.openelisglobal.nidan.cisretry.retry.url=$(CIS_BASE_URL)/api/dead-letters/retry
+          readinessProbe:
+            httpGet:
+              path: /OpenELIS-Global/LoginPage
+              port: 8080
+              httpHeaders:
+                - name: X-Forwarded-Proto
+                  value: https
+                - name: X-Forwarded-Port
+                  value: "443"
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /OpenELIS-Global/LoginPage
+              port: 8080
+              httpHeaders:
+                - name: X-Forwarded-Proto
+                  value: https
+                - name: X-Forwarded-Port
+                  value: "443"
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "3Gi" }
+          volumeMounts:
+            # Static config — kept as ConfigMap mounts (read-only, fine)
+            - { name: openelis-server-xml,   mountPath: /usr/local/tomcat/conf/server.xml, subPath: server.xml,        readOnly: true }
+            - { name: openelis-common-props, mountPath: /run/secrets/common.properties,   subPath: common.properties, readOnly: true }
+            # Writable volume for the whole openelis-global tree
+            - { name: openelis-volume,       mountPath: /var/lib/openelis-global }
+            # Certs (read-only from Secret)
+            - { name: openelis-certs,        mountPath: /etc/openelis-global, readOnly: true }
+            # Tomcat logs and Lucene index
+            - { name: openelis-tomcat-logs,  mountPath: /usr/local/tomcat/logs }
+            - { name: openelis-lucene-index, mountPath: /var/lib/lucene_index }
+
+      volumes:
+        - name: openelis-server-xml
+          configMap:
+            name: openelis-config-files
+            items: [{ key: server.xml, path: server.xml }]
+        - name: openelis-common-props
+          configMap:
+            name: openelis-config-files
+            items: [{ key: common.properties, path: common.properties }]
+        - name: openelis-certs
+          secret: { secretName: openelis-certs, optional: true }
+        - name: openelis-volume
+          persistentVolumeClaim:
+            claimName: openelis-volume
+        - name: openelis-tomcat-logs
+          emptyDir: {}
+        - name: openelis-lucene-index
+          emptyDir: {}
+        - name: openelis-ocl-src
+          configMap:
+            name: openelis-ocl-import
+            optional: true
+
+---
+# ------------------------------------------------------------
+# 7. PVC — openelis-volume (writable tree for OpenELIS runtime)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openelis-volume
+  namespace: nidan
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# ------------------------------------------------------------
+# 8. Service — openelis-frontend
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: openelis-frontend
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: openelis-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+
+---
+# ------------------------------------------------------------
+# 9. Deployment — openelis-frontend
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openelis-frontend
+  namespace: nidan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openelis-frontend
+  template:
+    metadata:
+      labels:
+        app: openelis-frontend
+    spec:
+      containers:
+        - name: openelis-frontend
+          image: trigonaltechnology/openelis-global-2-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            - { name: CHOKIDAR_USEPOLLING, value: "true" }
+            - { name: PUBLIC_URL, value: "/openelis" }
+            - { name: REACT_APP_BASE_PATH, value: "/openelis" }
+            - { name: REACT_APP_SERVER_BASE, value: "/api/OpenELIS-Global" }
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+

@@ -1,0 +1,9 @@
+apiVersion: v2
+name: nidan-chart
+description: NIDAN stack — Gateway + OpenMRS
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: NIDAN Team
+    email: utsavdeshar@gmail.com

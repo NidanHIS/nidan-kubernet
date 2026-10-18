@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: nidan
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: gateway
+
+  template:
+    metadata:
+      labels:
+        app: gateway
+
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: gateway
+
+      containers:
+        - name: gateway
+          image: utsavd/nidan-proxy:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 80
+
+            - name: https
+              containerPort: 443
+
+            - name: gateway-8443
+              containerPort: 8443
+
+          env:
+            - name: GATEWAY_CERT_SANS
+              value: ""
+
+            - name: OPENELIS_DOMAIN
+              value: ""
+
+            - name: OPENELIS_CONTEXT_PATH
+              value: "/api/OpenELIS-Global/"
+
+            - name: DASHBOARD_ODOO_URL
+              value: ""
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3

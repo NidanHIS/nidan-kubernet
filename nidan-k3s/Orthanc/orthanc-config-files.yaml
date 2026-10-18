@@ -1,0 +1,68 @@
+apiVersion: v1
+data:
+  orthanc.json: |-
+    {
+        // STATIC configuration only (server ports, plugin settings, DICOM AET).
+        //
+        // This file does NOT define the database, storage, or auth config. Those are
+        // injected at runtime via ORTHANC__* environment variables in docker-compose.yml:
+        //   - ORTHANC__POSTGRESQL__ENABLE_INDEX=true    -> index/metadata in PostgreSQL (orthanc-db)
+        //   - ORTHANC__POSTGRESQL__ENABLE_STORAGE=false -> DICOM *files* on the FILESYSTEM
+        //        (default StorageDirectory /var/lib/orthanc/db, backed by the `orthanc-data` volume)
+        //   - ORTHANC__REGISTERED_USERS                 -> HTTP Basic credentials
+        // Source of truth for DB/storage/auth is docker-compose.yml, not this file.
+        // (Orthanc's config parser permits // comments.)
+        "Name": "Nidan Orthanc",
+        "Plugins": [ "/usr/share/orthanc/plugins" ],
+        "DicomServerEnabled": true,
+        "DicomPort": 4242,
+        "DicomAet": "NIDAN_ORTHANC",
+        "HttpServerEnabled": true,
+        "HttpPort": 8042,
+        "RemoteAccessAllowed": true,
+        "AuthenticationEnabled": true,
+        "Worklists": {
+            "Enable": true,
+            "Database": "/var/lib/orthanc/worklists",
+            "FilterIssuerAet": false,
+            "LimitAnswers": 0
+        },
+        "DicomWeb": {
+            "Enable": true,
+            "Root": "/dicom-web/",
+            "EnableWado": true,
+            "WadoRoot": "/wado",
+            "Ssl": false,
+            "StudiesMetadata": "Full",
+            "SeriesMetadata": "Full"
+        },
+        "Ohif": {
+            "DataSource": "dicom-web",
+            "RouterBasename": "/ohif/"
+        },
+        "OrthancExplorer2": {
+            "Enable": true,
+            "IsDefaultOrthancUI": true,
+            "UiOptions": {
+                "EnableOpenInOhifViewer3": true,
+                "OhifViewer3PublicRoot": "/ohif/"
+            }
+        },
+        "LuaScripts": [
+            "/etc/orthanc/webhook.lua"
+        ]
+    }
+  webhook.lua: "function OnStableStudy(studyId, tags, metadata)\n    local url = os.getenv(\"ORTHANC_WEBHOOK_URL\")\n
+    \   if url == nil or url == \"\" then\n        print(\"Webhook URL not configured.
+    Skipping webhook.\")\n        return\n    end\n\n    print(\"Study \" .. studyId
+    .. \" is stable. Triggering webhook to \" .. url)\n    \n    -- Fetch the complete
+    study JSON from the Orthanc REST API\n    local studyInfo = RestApiGet('/studies/'
+    .. studyId)\n    \n    -- Perform an HTTP POST to the configured webhook URL\n
+    \   -- Set headers to indicate application/json to avoid Spring Boot parsing it
+    as form parameters\n    local headers = {\n        [\"Content-Type\"] = \"application/json\"\n
+    \   }\n    \n    local response = HttpPost(url, studyInfo, headers)\n    \n    print(\"Webhook
+    triggered successfully.\")\nend\n"
+kind: ConfigMap
+metadata:
+  name: orthanc-config-files
+  namespace: nidan

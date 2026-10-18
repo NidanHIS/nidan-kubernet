@@ -1,0 +1,4 @@
+cd ~/nidan/nidan-docker/openelis/volume/configuration/backend/ocl/
+
+kubectl -n nidan create configmap openelis-ocl-import \
+  --from-file=TTH_Laboratory_v0.2.2026-03-21_073201.zip

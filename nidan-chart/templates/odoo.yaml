@@ -1,0 +1,421 @@
+{{- if .Values.odoo.enabled }}
+# ------------------------------------------------------------
+# 1. ConfigMap — non-secret environment values
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: odoo-config
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  ODOO_DB_NAME: "nidan"
+  ODOO_DB_HOST: "odoo-db"
+  ODOO_DB_USER: "odoo"
+  ODOO_DB_PORT: "5432"
+  ODOO_POSTGRES_DB: "postgres"
+  ODOO_POSTGRES_USER: "odoo"
+  ODOO_ADMIN_EMAIL: "nidan"
+  ODOO_ADMIN_PASSWORD: "nidan"
+  ODOO_WEB_BASE_URL: "http://192.168.1.100:8069"
+  ODOO_WEB_BASE_URL_FREEZE: "True"
+  ODOO_DB_FILTER: "^nidan$"
+  NIDAN_OIS_URL: "http://nidan-ois:8082"
+  NIDAN_OIS_SECRET: "sample"
+  NIDAN_ODOO_SECRET: "sample"
+
+---
+# ------------------------------------------------------------
+# 2. Secret — passwords
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: odoo-secret
+  namespace: {{ include "nidan.namespace" . }}
+type: Opaque
+stringData:
+  ODOO_DB_PASSWORD: "odoo"
+  ODOO_POSTGRES_PASSWORD: "odoo"
+
+---
+# ------------------------------------------------------------
+# 3. ConfigMap — init-odoo-db.sh
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: odoo-config-files
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  init-odoo-db.sh: |
+    #!/bin/bash
+    set -e
+
+    until PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d postgres -c '\q' 2>/dev/null; do
+      >&2 echo "PostgreSQL is unavailable - sleeping"
+      sleep 1
+    done
+
+    PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d postgres <<-EOSQL
+        DO \$\$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_user WHERE usename = '${ODOO_DB_USER}') THEN
+                CREATE USER ${ODOO_DB_USER} WITH PASSWORD '${ODOO_DB_PASSWORD}';
+            END IF;
+        END
+        \$\$;
+    EOSQL
+
+    PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d postgres <<-EOSQL
+        SELECT 'CREATE DATABASE ${ODOO_DB_NAME} OWNER ${ODOO_DB_USER}'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${ODOO_DB_NAME}')\gexec
+    EOSQL
+
+    PGPASSWORD="${POSTGRES_PASSWORD}" psql -U "${POSTGRES_USER}" -d postgres <<-EOSQL
+        GRANT ALL PRIVILEGES ON DATABASE ${ODOO_DB_NAME} TO ${ODOO_DB_USER};
+        ALTER DATABASE ${ODOO_DB_NAME} OWNER TO ${ODOO_DB_USER};
+    EOSQL
+
+    echo "Database ${ODOO_DB_NAME} and user ${ODOO_DB_USER} are ready"
+
+---
+# ------------------------------------------------------------
+# 4. Service — odoo-db
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: odoo-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# ------------------------------------------------------------
+# 5. StatefulSet — odoo-db
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: odoo-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  serviceName: odoo-db
+  replicas: {{ .Values.odoo.db.replicas }}
+  selector:
+    matchLabels:
+      app: odoo-db
+  template:
+    metadata:
+      labels:
+        app: odoo-db
+    spec:
+      containers:
+        - name: odoo-db
+          image: "{{ .Values.odoo.db.image.repository }}:{{ .Values.odoo.db.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_POSTGRES_DB } }
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef:    { name: odoo-secret, key: ODOO_POSTGRES_PASSWORD } }
+            - name: ODOO_DB_NAME
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_NAME } }
+            - name: ODOO_DB_USER
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_USER } }
+            - name: ODOO_DB_PASSWORD
+              valueFrom: { secretKeyRef:    { name: odoo-secret, key: ODOO_DB_PASSWORD } }
+          readinessProbe:
+            exec:
+              command: [ "sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"" ]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: [ "sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"" ]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "2Gi" }
+          volumeMounts:
+            - name: odoo-db-data
+              mountPath: /var/lib/postgresql/data
+            - name: odoo-db-init
+              mountPath: /docker-entrypoint-initdb.d/init-odoo-db.sh
+              subPath: init-odoo-db.sh
+              readOnly: true
+      volumes:
+        - name: odoo-db-init
+          configMap:
+            name: odoo-config-files
+            defaultMode: 0755
+            items:
+              - key: init-odoo-db.sh
+                path: init-odoo-db.sh
+  volumeClaimTemplates:
+    - metadata:
+        name: odoo-db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# ------------------------------------------------------------
+# 6. Service — odoo (ClusterIP)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  selector:
+    app: odoo
+  ports:
+    - name: http
+      port: 8069
+      targetPort: 8069
+
+---
+# ------------------------------------------------------------
+# 6b. Service — odoo-nodeport
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo-nodeport
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: NodePort
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  selector:
+    app: odoo
+  ports:
+    - name: http
+      port: 8069
+      targetPort: 8069
+      nodePort: 30069
+
+---
+# ------------------------------------------------------------
+# 7. Job — odoo-init
+# ------------------------------------------------------------
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: odoo-init
+  namespace: {{ include "nidan.namespace" . }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 1800
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-odoo-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for odoo-db:5432..."
+              until nc -z odoo-db 5432; do
+                echo "  still waiting..."
+                sleep 3
+              done
+              echo "odoo-db is up."
+      containers:
+        - name: odoo-init
+          image: "{{ .Values.odoo.image.repository }}:{{ .Values.odoo.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - odoo
+            - -d
+            - nidan
+            - -i
+            - base,web,nidan_core,nidan_seed_data,nidan_connector
+            - --stop-after-init
+            - --no-http
+            - --db_host=odoo-db
+            - --db_port=5432
+            - --db_user=odoo
+            - --db_password=odoo
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "3Gi" }
+
+---
+# ------------------------------------------------------------
+# 8. Deployment — odoo
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  replicas: {{ .Values.odoo.replicas }}
+  selector:
+    matchLabels:
+      app: odoo
+  template:
+    metadata:
+      labels:
+        app: odoo
+    spec:
+      securityContext:
+        fsGroup: 101
+        fsGroupChangePolicy: "OnRootMismatch"
+      initContainers:
+        - name: wait-for-odoo-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for odoo-db:5432..."
+              until nc -z odoo-db 5432; do
+                echo "  still waiting..."
+                sleep 3
+              done
+              echo "odoo-db is up."
+
+        - name: fix-filestore-permissions
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Fixing /var/lib/odoo ownership..."
+              mkdir -p /var/lib/odoo/filestore /var/lib/odoo/sessions
+              chown -R 101:101 /var/lib/odoo
+              chmod -R u+rwX,g+rwX /var/lib/odoo
+              echo "Done."
+          volumeMounts:
+            - name: odoo-data
+              mountPath: /var/lib/odoo
+
+      containers:
+        - name: odoo
+          image: "{{ .Values.odoo.image.repository }}:{{ .Values.odoo.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          args:
+            - odoo
+            - -d
+            - "$(ODOO_DB_NAME)"
+            - --db_host=$(HOST)
+            - --db_port=$(PORT)
+            - --db_user=$(USER)
+            - --db_password=$(PASSWORD)
+            - --proxy-mode
+          ports:
+            - name: http
+              containerPort: 8069
+          env:
+            - name: HOST
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_HOST } }
+            - name: USER
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_USER } }
+            - name: PASSWORD
+              valueFrom: { secretKeyRef:    { name: odoo-secret, key: ODOO_DB_PASSWORD } }
+            - name: PORT
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_PORT } }
+            - name: ODOO_DB_NAME
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_NAME } }
+            - name: ODOO_ADMIN_EMAIL
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_ADMIN_EMAIL } }
+            - name: ODOO_ADMIN_PASSWORD
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_ADMIN_PASSWORD } }
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef:    { name: odoo-secret, key: ODOO_POSTGRES_PASSWORD } }
+            - name: NIDAN_OIS_URL
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: NIDAN_OIS_URL } }
+            - name: NIDAN_OIS_SECRET
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: NIDAN_OIS_SECRET } }
+            - name: NIDAN_ODOO_SECRET
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: NIDAN_ODOO_SECRET } }
+            - name: ODOO_WEB_BASE_URL
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_WEB_BASE_URL } }
+            - name: ODOO_WEB_BASE_URL_FREEZE
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_WEB_BASE_URL_FREEZE } }
+            - name: ODOO_DB_FILTER
+              valueFrom: { configMapKeyRef: { name: odoo-config, key: ODOO_DB_FILTER } }
+          readinessProbe:
+            httpGet:
+              path: /web/health
+              port: 8069
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /web/health
+              port: 8069
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "3Gi" }
+          volumeMounts:
+            - name: odoo-data
+              mountPath: /var/lib/odoo
+      volumes:
+        - name: odoo-data
+          persistentVolumeClaim:
+            claimName: odoo-data
+
+---
+# ------------------------------------------------------------
+# 9. PVC — odoo-data
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: odoo-data
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+{{- end }}

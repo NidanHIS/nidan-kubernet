@@ -1,0 +1,179 @@
+# ============================================================
+# Global
+# ============================================================
+global:
+  namespace: nidan
+
+# ============================================================
+# Gateway
+# ============================================================
+gateway:
+  image:
+    repository: utsavd/gateway-proxy
+    tag: latest
+  replicas: 1
+
+# ============================================================
+# OpenMRS
+# ============================================================
+openmrs:
+  db:
+    image:
+      repository: trigonaltechnology/openmrs-db
+      tag: latest
+    replicas: 1
+
+  backend:
+    image:
+      repository: trigonaltechnology/openmrs-backend
+      tag: latest
+    replicas: 1
+
+  frontend:
+    image:
+      repository: trigonaltechnology/openmrs-frontend
+      tag: latest
+    replicas: 1
+
+# ============================================================
+# Odoo
+# ============================================================
+odoo:
+  enabled: true
+  image:
+    repository: trigonaltechnology/nidan_odoo
+    tag: latest
+  replicas: 1
+  db:
+    image:
+      repository: postgres
+      tag: "15"
+    replicas: 1
+
+#  ===============================================================
+#Openelis
+openelis:
+  enabled: true
+
+  db:
+    image:
+      repository: trigonaltechnology/openelis-global-2-database
+      tag: latest
+    replicas: 1
+
+  backend:
+    image:
+      repository: trigonaltechnology/openelis-global-2
+      tag: latest
+    replicas: 1
+
+  frontend:
+    image:
+      repository: trigonaltechnology/openelis-global-2-frontend
+      tag: latest
+    replicas: 1
+
+# =================================================================
+#Orthanc
+#=================================================================
+orthanc:
+  enabled: true
+
+  image:
+    repository: orthancteam/orthanc
+    tag: "26.6.0"
+  replicas: 1
+
+  db:
+    image:
+      repository: postgres
+      tag: "15"
+    replicas: 1
+
+#=======================================================================
+#Kafka
+#=======================================================================
+kafka:
+  enabled: true
+
+  zookeeper:
+    image:
+      repository: confluentinc/cp-zookeeper
+      tag: "7.5.0"
+    replicas: 1
+
+  broker:
+    image:
+      repository: confluentinc/cp-kafka
+      tag: "7.5.0"
+    replicas: 1
+
+#==========================================================================
+#CIS-OIS ======================================================
+#========================================================================
+nidanCisOis:
+  enabled: true
+
+  cis:
+    image:
+      repository: trigonaltechnology/nidan-cis
+      tag: latest
+    replicas: 1
+
+  ois:
+    image:
+      repository: trigonaltechnology/nidan-ois
+      tag: latest
+    replicas: 1
+
+#========================================================
+#Nidan-integration=======================================
+#======================================================
+nidanIntegrationDb:
+  enabled: true
+
+  image:
+    repository: postgres
+    tag: "15"
+  replicas: 1
+
+#===============================================================
+#Superset ======================================================
+# ================================================================
+superset:
+  enabled: true
+
+  # Set to true ONLY if you want Helm to own the superset-config-files
+  # ConfigMap. Requires the source files to exist under nidan-chart/files/.
+  # If false (default), you must create the ConfigMap manually:
+  #   kubectl create configmap superset-config-files -n nidan \
+  #     --from-file=superset_config.py=./superset_config.py \
+  #     --from-file=init_superset_metadata.py=./init_superset_metadata.py \
+  #     --from-file=pager.js=./pager.js \
+  #     --from-file=scroller.js=./scroller.js \
+  #     --from-file=docker-entrypoint.sh=./docker-entrypoint.sh
+  manageConfigFiles: false
+
+  image:
+    repository: trigonaltechnology/superset
+    tag: latest
+  replicas: 1
+
+
+# ============================================================================================
+#Dhis2 
+#======================================================================
+
+nidanDhis2:
+  enabled: true
+
+  image:
+    repository: trigonaltechnology/nidan-dhis2-integration
+    tag: latest
+  replicas: 1
+
+  db:
+    image:
+      repository: mysql
+      tag: "8.0"
+    replicas: 1

@@ -1,0 +1,323 @@
+{{- if .Values.orthanc.enabled }}
+# ------------------------------------------------------------
+# 0. ConfigMap — orthanc.json + webhook.lua (from files/)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orthanc-config-files
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  orthanc.json: |
+{{ .Files.Get "files/orthanc.json" | indent 4 }}
+  webhook.lua: |
+{{ .Files.Get "files/webhook.lua" | indent 4 }}
+
+---
+# ------------------------------------------------------------
+# 1. ConfigMap — non-secret Orthanc settings (env vars)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orthanc-config
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  # --- Plugins ---
+  DICOM_WEB_PLUGIN_ENABLED: "true"
+  WORKLISTS_PLUGIN_ENABLED: "true"
+  POSTGRESQL_PLUGIN_ENABLED: "true"
+  OHIF_PLUGIN_ENABLED: "true"
+  ORTHANC_EXPLORER_2_ENABLED: "true"
+  WEBHOOKS_PLUGIN_ENABLED: "true"
+
+  # --- Startup ---
+  VERBOSE_STARTUP: "true"
+
+  # --- PostgreSQL plugin ---
+  ORTHANC__POSTGRESQL__ENABLE_INDEX: "true"
+  ORTHANC__POSTGRESQL__ENABLE_STORAGE: "false"
+  ORTHANC__POSTGRESQL__HOST: "orthanc-db"
+  ORTHANC__POSTGRESQL__PORT: "5432"
+  ORTHANC__POSTGRESQL__DATABASE: "orthanc"
+  ORTHANC__POSTGRESQL__USERNAME: "orthanc"
+
+  # --- Auth ---
+  ORTHANC_USERNAME: "nidan"
+
+  # --- Webhook to CIS ---
+  ORTHANC_WEBHOOK_URL: "http://nidan-cis:8081/orthanc/webhook"
+
+  # --- DICOM UID root ---
+  ORTHANC_DICOM_UID_ROOT: "1.2.840.10008"
+
+---
+# ------------------------------------------------------------
+# 2. Secret — Orthanc DB + UI passwords
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orthanc-secret
+  namespace: {{ include "nidan.namespace" . }}
+type: Opaque
+stringData:
+  ORTHANC_DB_PASSWORD: "orthanc"
+  ORTHANC_PASSWORD: "nidan"
+  POSTGRES_PASSWORD: "orthanc"
+
+---
+# ------------------------------------------------------------
+# 3. Service — orthanc-db
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: orthanc-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: orthanc-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# ------------------------------------------------------------
+# 4. StatefulSet — orthanc-db
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: orthanc-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  serviceName: orthanc-db
+  replicas: {{ .Values.orthanc.db.replicas }}
+  selector:
+    matchLabels:
+      app: orthanc-db
+  template:
+    metadata:
+      labels:
+        app: orthanc-db
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: orthanc-db
+          image: "{{ .Values.orthanc.db.image.repository }}:{{ .Values.orthanc.db.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: orthanc-config, key: ORTHANC__POSTGRESQL__DATABASE } }
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: orthanc-config, key: ORTHANC__POSTGRESQL__USERNAME } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef:    { name: orthanc-secret, key: POSTGRES_PASSWORD } }
+            - name: POSTGRES_INITDB_ARGS
+              value: "--data-checksums"
+          readinessProbe:
+            exec: { command: [ "sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"" ] }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec: { command: [ "sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\"" ] }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "2Gi" }
+          volumeMounts:
+            - name: orthanc-db-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: orthanc-db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# ------------------------------------------------------------
+# 5. Service — orthanc (ClusterIP)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: orthanc
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: orthanc
+  ports:
+    - name: http
+      port: 8042
+      targetPort: 8042
+    - name: dicom
+      port: 4242
+      targetPort: 4242
+
+---
+# ------------------------------------------------------------
+# 5b. Service — orthanc-nodeport (LAN access)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: orthanc-nodeport
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: NodePort
+  selector:
+    app: orthanc
+  ports:
+    - name: http
+      port: 8042
+      targetPort: 8042
+      nodePort: 30042
+    - name: dicom
+      port: 4242
+      targetPort: 4242
+      nodePort: 30424
+
+---
+# ------------------------------------------------------------
+# 6. Deployment — orthanc
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orthanc
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  replicas: {{ .Values.orthanc.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: orthanc
+  template:
+    metadata:
+      labels:
+        app: orthanc
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-orthanc-db
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for orthanc-db:5432..."
+              until nc -z orthanc-db 5432; do
+                echo "  still waiting..."
+                sleep 3
+              done
+              echo "orthanc-db is up."
+      containers:
+        - name: orthanc
+          image: "{{ .Values.orthanc.image.repository }}:{{ .Values.orthanc.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8042
+            - name: dicom
+              containerPort: 4242
+          envFrom:
+            - configMapRef:
+                name: orthanc-config
+          env:
+            - name: ORTHANC__POSTGRESQL__PASSWORD
+              valueFrom: { secretKeyRef: { name: orthanc-secret, key: ORTHANC_DB_PASSWORD } }
+            - name: ORTHANC_PASSWORD
+              valueFrom: { secretKeyRef: { name: orthanc-secret, key: ORTHANC_PASSWORD } }
+            - name: ORTHANC__REGISTERED_USERS
+              value: '{"nidan":"nidan"}'
+          startupProbe:
+            tcpSocket:
+              port: 8042
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: 8042
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8042
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "3Gi" }
+          volumeMounts:
+            - name: orthanc-config-files
+              mountPath: /etc/orthanc/orthanc.json
+              subPath: orthanc.json
+              readOnly: true
+            - name: orthanc-config-files
+              mountPath: /etc/orthanc/webhook.lua
+              subPath: webhook.lua
+              readOnly: true
+            - name: orthanc-worklists
+              mountPath: /var/lib/orthanc/worklists
+            - name: orthanc-data
+              mountPath: /var/lib/orthanc/db
+      volumes:
+        - name: orthanc-config-files
+          configMap:
+            name: orthanc-config-files
+            defaultMode: 0644
+        - name: orthanc-worklists
+          persistentVolumeClaim:
+            claimName: orthanc-worklists
+        - name: orthanc-data
+          persistentVolumeClaim:
+            claimName: orthanc-data
+
+---
+# ------------------------------------------------------------
+# 7. PVCs — worklists and DICOM store
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orthanc-worklists
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orthanc-data
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi
+{{- end }}

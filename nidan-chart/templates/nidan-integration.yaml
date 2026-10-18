@@ -1,0 +1,116 @@
+{{- if .Values.nidanIntegrationDb.enabled }}
+# ------------------------------------------------------------
+# 1. ConfigMap — non-secret settings
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nidan-integration-db-config
+  namespace: {{ include "nidan.namespace" . }}
+data:
+  INTEGRATION_DB_NAME: "nidan_integration"
+  INTEGRATION_DB_USER: "nidan"
+
+---
+# ------------------------------------------------------------
+# 2. Secret — password
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nidan-integration-db-secret
+  namespace: {{ include "nidan.namespace" . }}
+type: Opaque
+stringData:
+  INTEGRATION_DB_PASSWORD: "nidan"
+
+---
+# ------------------------------------------------------------
+# 3. Service — nidan-integration-db
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-integration-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-integration-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+
+---
+# ------------------------------------------------------------
+# 4. StatefulSet — nidan-integration-db
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nidan-integration-db
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  serviceName: nidan-integration-db
+  replicas: {{ .Values.nidanIntegrationDb.replicas }}
+  selector:
+    matchLabels:
+      app: nidan-integration-db
+  template:
+    metadata:
+      labels:
+        app: nidan-integration-db
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: nidan-integration-db
+          image: "{{ .Values.nidanIntegrationDb.image.repository }}:{{ .Values.nidanIntegrationDb.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: nidan-integration-db-config, key: INTEGRATION_DB_NAME } }
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: nidan-integration-db-config, key: INTEGRATION_DB_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef:    { name: nidan-integration-db-secret, key: INTEGRATION_DB_PASSWORD } }
+            - name: POSTGRES_INITDB_ARGS
+              value: "--data-checksums"
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "2Gi" }
+          volumeMounts:
+            - name: nidan-integration-db-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: nidan-integration-db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+{{- end }}

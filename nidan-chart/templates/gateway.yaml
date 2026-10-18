@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+
+  selector:
+    matchLabels:
+      app: gateway
+
+  template:
+    metadata:
+      labels:
+        app: gateway
+
+    spec:
+      nodeSelector:
+        gateway: "true"
+
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: gateway
+
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 80
+
+            - name: https
+              containerPort: 443
+
+            - name: gateway-8443
+              containerPort: 8443
+
+          env:
+            - name: GATEWAY_DOMAIN
+              value: "localhost"
+
+            - name: GATEWAY_CERT_SANS
+              value: ""
+
+            - name: OPENELIS_DOMAIN
+              value: ""
+
+            - name: OPENELIS_CONTEXT_PATH
+              value: "/api/OpenELIS-Global/"
+
+            - name: DASHBOARD_ODOO_URL
+              value: "http://localhost:8069"
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  type: NodePort
+
+  selector:
+    app: gateway
+
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 30080
+
+    - name: https
+      port: 443
+      targetPort: 443
+      nodePort: 30443
+
+    - name: gateway-8443
+      port: 8443
+      targetPort: 8443
+      nodePort: 30444

@@ -1,0 +1,374 @@
+# ============================================================
+# NIDAN CIS + OIS — Kubernetes manifest
+# Namespace: nidan
+# ------------------------------------------------------------
+# Deploy:
+#   kubectl apply -f nidan-cis-ois.yaml -n nidan
+#
+# Depends on (must be up first):
+#   nidan-integration-db, nidan-kafka, nidan-zookeeper
+#   openmrs-db, openmrs-backend        (CIS)
+#   odoo, odoo-db                      (OIS)
+#   orthanc, orthanc-worklists PVC     (CIS)
+#
+# Notes:
+#   - CIS shares the orthanc-worklists PVC with Orthanc.
+#   - Both pods use initContainers to wait for dependencies.
+#   - Probes hit /actuator/health.
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. ConfigMap — CIS + OIS non-secret settings
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nidan-cis-ois-config
+  namespace: nidan
+data:
+  # --- Common ---
+  CIS_PORT: "8081"
+  OIS_PORT: "8082"
+  MANAGEMENT_HEALTH_REDIS_ENABLED: "false"
+
+  # --- Kafka client timeouts / backoff ---
+  KAFKA_CONSUMER_REQUEST_TIMEOUT_MS: "120000"
+  KAFKA_CONSUMER_SESSION_TIMEOUT_MS: "45000"
+  KAFKA_CONSUMER_HEARTBEAT_INTERVAL_MS: "15000"
+  KAFKA_CONSUMER_MAX_POLL_INTERVAL_MS: "600000"
+  KAFKA_CONSUMER_FETCH_MAX_WAIT_MS: "500"
+  KAFKA_PRODUCER_REQUEST_TIMEOUT_MS: "120000"
+  KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS: "180000"
+  KAFKA_PRODUCER_LINGER_MS: "5"
+  KAFKA_METADATA_MAX_AGE_MS: "300000"
+  KAFKA_RECONNECT_BACKOFF_MS: "500"
+  KAFKA_RECONNECT_BACKOFF_MAX_MS: "10000"
+
+  # --- CIS: OpenMRS ---
+  OPENMRS_ENABLED: "true"
+  OPENMRS_BASE_URL: "http://openmrs-backend:8080/openmrs"
+  OPENMRS_USERNAME: "nidan-sync"
+  OPENMRS_ADMIN_USERNAME: "admin"
+  NIDAN_SYNC_USERNAME: "nidan-sync"
+  OPENMRS_IDENTIFIER_TYPE_UUID: "c0e1d2f3-a4b5-4c6d-9e0f-1a2b3c4d5e6f"
+  OPENMRS_DEFAULT_LOCATION_UUID: "44c3efb0-2583-4c80-a79e-1f756a03c0a1"
+  OPENMRS_LAB_RESULTS_ENCOUNTER_TYPE_UUID: "3596fafb-6f6f-4396-8c87-6e63a0f1bd71"
+  OPENMRS_LAB_ORDERABLES_CONCEPT_SET_UUID: "1748a953-d12e-4be1-914c-f6b096c6cdef"
+  OPENMRS_FHIR_EXTENSION_URL: "http://fhir.openmrs.org/ext/patient/identifier#location"
+  OPENMRS_ORDER_TYPE_UUID_DRUG: "131168f4-15f5-102d-96e4-000c29c2a5d7"
+  OPENMRS_ORDER_TYPE_UUID_LAB: "52a447d3-a64a-11e3-9aeb-50e549534c5e"
+  OPENMRS_ORDER_TYPE_UUID_RADIOLOGY: "c19c8e82-8b8d-4b4e-b1ff-3f09890b2db3"
+  OPENMRS_ORDER_TYPE_UUID_PROCEDURE: "4237a01f-29c5-4167-9d8e-96d6e590aa33"
+  OPENMRS_ORDER_TYPE_UUID_MEDICAL_SUPPLY: "dab3ab30-2feb-48ec-b4af-8332a0831b49"
+  OPENMRS_ORDER_TYPE_UUID_BED: "e8c4fd91-4b0a-4f2c-9d8e-1a2b3c4d5e6f"
+
+  # --- CIS: OpenELIS ---
+  OPENELIS_ENABLED: "true"
+  OPENELIS_BASE_URL: "http://openelis:8080/OpenELIS-Global/rest"
+  OPENELIS_USERNAME: "admin"
+  OPENELIS_DB_HOST: "openelis-db"
+  OPENELIS_DB_PORT: "5432"
+  OPENELIS_DB_NAME: "clinlims"
+  OPENELIS_DB_USER: "clinlims"
+
+  # --- CIS: Orthanc ---
+  ORTHANC_ENABLED: "true"
+  ORTHANC_BASE_URL: "http://orthanc:8042"
+  ORTHANC_USERNAME: "nidan"
+  ORTHANC_DICOM_UID_ROOT: "1.2.840.10008"
+  ORTHANC_WORKLIST_DIR: "/var/lib/orthanc/worklists"
+  DICOM_TYPE: "orthanc"
+
+  # --- CIS: integration ---
+  INTEGRATION_SOURCE_SYSTEM: "CIS"
+  INTEGRATION_SKIP_SOURCE_SYSTEMS: "OPENMRS"
+  RADIOLOGY_ACCESSION_PREFIX: "RAD-"
+  RADIOLOGY_PROCEDURE_CODE_PREFIX: "RAD-"
+  INTEGRATION_FLOW_RADIOLOGY_MWL_ENABLED: "true"
+  INTEGRATION_FLOW_RADIOLOGY_POS_ENABLED: "true"
+  INTEGRATION_FLOW_LAB_OPENELIS_ENABLED: "true"
+  INTEGRATION_FLOW_LAB_POS_ENABLED: "true"
+  INTEGRATION_FLOW_LAB_RESULTS_OPENMRS_ENABLED: "true"
+  INTEGRATION_FLOW_DEBEZIUM_PUBLISH_ORDERS_LAB_ENABLED: "true"
+  INTEGRATION_FLOW_DEBEZIUM_PUBLISH_ORDERS_RADIOLOGY_ENABLED: "true"
+
+  # --- CIS: Debezium ---
+  DEBEZIUM_ENABLED: "true"
+  DEBEZIUM_DB_USER: "root"
+  DEBEZIUM_TABLE_INCLUDE_LIST: "openmrs.visit,openmrs.orders,openmrs.drug_order,openmrs.person,openmrs.person_name,openmrs.patient_identifier,openmrs.bed_type,openmrs.bed_patient_assignment_map,openmrs.location,openmrs.provider,openmrs.provider_attribute"
+
+  # --- CIS: Kafka retry ---
+  INTEGRATION_KAFKA_RETRY_ENABLED: "true"
+  INTEGRATION_KAFKA_RETRY_ATTEMPTS: "5"
+  INTEGRATION_KAFKA_RETRY_INITIAL_DELAY: "5s"
+  INTEGRATION_KAFKA_RETRY_MULTIPLIER: "2.0"
+  INTEGRATION_KAFKA_RETRY_MAX_DELAY: "10m"
+  CIS_INTEGRATION_KAFKA_RETRY_TOPIC_SUFFIX: "-cis-retry"
+  CIS_INTEGRATION_KAFKA_RETRY_DLT_SUFFIX: ".cis.DLT"
+
+  # --- OIS: Odoo ---
+  ODOO_BASE_URL: "http://odoo:8069"
+  ODOO_DATABASE: "nidan"
+  ODOO_USERNAME: "nidan"
+  SKIP_SOURCE_SYSTEMS_FOR_ODOO: "ODOO"
+
+  # --- OIS: secrets as non-secret values ---
+  NIDAN_OIS_URL: "http://nidan-ois:8082"
+  NIDAN_OIS_SECRET: "sample"
+  ODOO_NIDAN_SECRET: "sample"
+
+  # --- OIS: Kafka retry ---
+  OIS_INTEGRATION_KAFKA_RETRY_TOPIC_SUFFIX: "-ois-retry"
+  OIS_INTEGRATION_KAFKA_RETRY_DLT_SUFFIX: ".ois.DLT"
+
+---
+# ------------------------------------------------------------
+# 2. Secret — passwords and shared secrets
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nidan-cis-ois-secret
+  namespace: nidan
+type: Opaque
+stringData:
+  # DB
+  INTEGRATION_DB_PASSWORD: "nidan"
+
+  # OpenMRS
+  OPENMRS_PASSWORD: "Nidan@123"
+  OPENMRS_ADMIN_PASSWORD: "Admin123"
+  NIDAN_SYNC_PASSWORD: "Nidan@123"
+
+  # OpenELIS
+  OPENELIS_PASSWORD: "adminADMIN!"
+  OPENELIS_DB_PASSWORD: "clinlims"
+
+  # Orthanc
+  ORTHANC_PASSWORD: "nidan"
+
+  # Odoo
+  ODOO_PASSWORD: "nidan"
+
+  # Debezium
+  DEBEZIUM_DB_PASSWORD: "openmrs"
+
+  # OIS webhook
+  OIS_WEBHOOK_SECRET: "sample"
+
+---
+# ------------------------------------------------------------
+# 3. Service — nidan-cis
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-cis
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-cis
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+
+---
+# ------------------------------------------------------------
+# 4. Deployment — nidan-cis
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nidan-cis
+  namespace: nidan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nidan-cis
+  template:
+    metadata:
+      labels:
+        app: nidan-cis
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for nidan-integration-db:5432..."
+              until nc -z nidan-integration-db 5432; do sleep 3; done
+              echo "Waiting for nidan-kafka:9092..."
+              until nc -z nidan-kafka 9092; do sleep 3; done
+              echo "Waiting for openmrs-db:3306..."
+              until nc -z openmrs-db 3306; do sleep 3; done
+              echo "Waiting for openmrs-backend:8080..."
+              until nc -z openmrs-backend 8080; do sleep 3; done
+              echo "All CIS dependencies are up."
+      containers:
+        - name: nidan-cis
+          image: trigonaltechnology/nidan-cis:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: nidan-cis-ois-config
+            - secretRef:
+                name: nidan-cis-ois-secret
+          env:
+            # URLs assembled from pieces (ConfigMap + hostnames)
+            - name: INTEGRATION_DB_URL
+              value: "jdbc:postgresql://nidan-integration-db:5432/nidan_integration"
+            - name: INTEGRATION_DB_USER
+              value: "nidan"
+
+            - name: OPENMRS_DB_HOST
+              value: "openmrs-db"
+            - name: OPENMRS_DB_PORT
+              value: "3306"
+
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "nidan-kafka:9092"
+            - name: CIS_KAFKA_GROUP_ID
+              value: "nidan-cis"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "2Gi" }
+          volumeMounts:
+            - name: orthanc-worklists
+              mountPath: /var/lib/orthanc/worklists
+      volumes:
+        - name: orthanc-worklists
+          persistentVolumeClaim:
+            claimName: orthanc-worklists
+
+---
+# ------------------------------------------------------------
+# 5. Service — nidan-ois
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: nidan-ois
+  namespace: nidan
+spec:
+  type: ClusterIP
+  selector:
+    app: nidan-ois
+  ports:
+    - name: http
+      port: 8082
+      targetPort: 8082
+
+---
+# ------------------------------------------------------------
+# 6. Deployment — nidan-ois
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nidan-ois
+  namespace: nidan
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nidan-ois
+  template:
+    metadata:
+      labels:
+        app: nidan-ois
+    spec:
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-deps
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for nidan-integration-db:5432..."
+              until nc -z nidan-integration-db 5432; do sleep 3; done
+              echo "Waiting for nidan-kafka:9092..."
+              until nc -z nidan-kafka 9092; do sleep 3; done
+              echo "Waiting for odoo:8069..."
+              until nc -z odoo 8069; do sleep 3; done
+              echo "All OIS dependencies are up."
+      containers:
+        - name: nidan-ois
+          image: trigonaltechnology/nidan-ois:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: nidan-cis-ois-config
+            - secretRef:
+                name: nidan-cis-ois-secret
+          env:
+            - name: INTEGRATION_DB_URL
+              value: "jdbc:postgresql://nidan-integration-db:5432/nidan_integration"
+            - name: INTEGRATION_DB_USER
+              value: "nidan"
+
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "nidan-kafka:9092"
+            - name: OIS_KAFKA_GROUP_ID
+              value: "nidan-ois"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits:   { cpu: "2",    memory: "2Gi" }

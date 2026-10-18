@@ -1,0 +1,89 @@
+apiVersion: v1
+data:
+  common.properties: "# SSL disabled (enable and point to real keystores in production)\nserver.ssl.enabled=false\nserver.ssl.enabled=false\nserver.ssl.key-store=file:/etc/openelis-global/keystore\nserver.ssl.key-store-password=kspass\nserver.ssl.key-password=kspass\nserver.ssl.trust-store=file:/etc/openelis-global/truststore\nserver.ssl.trust-store-password=kspass\n\nencryption.general.password=kspass\n\n#
+    FHIR disabled - using REST API only\norg.openelisglobal.fhirstore.uri=\norg.openelisglobal.fhirstore.username=\norg.openelisglobal.fhirstore.password=\norg.openelisglobal.fhir.subscriber.allowHTTP=true\n\n#
+    Odoo Integration (fill when available)\norg.openelisglobal.odoo.baseUrl=\norg.openelisglobal.odoo.database=\norg.openelisglobal.odoo.username=\norg.openelisglobal.odoo.password=\n\n#
+    Remote FHIR server/Consolidated Server\norg.openelisglobal.remote.source.uri=\norg.openelisglobal.remote.source.updateStatus=true\norg.openelisglobal.remote.source.identifier=Practitioner/*\norg.openelisglobal.remote.poll.frequency=120000\norg.openelisglobal.task.useBasedOn=true\n\norg.openelisglobal.fhir.subscriber=\norg.openelisglobal.fhir.subscriber.resources=Task,Patient,ServiceRequest,DiagnosticReport,Observation,Specimen,Practitioner,Encounter\n\n#
+    Facility list placeholders\norg.openelisglobal.facilitylist.fhirstore=  \norg.openelisglobal.facilitylist.authurl=
+    \ \norg.openelisglobal.facilitylist.username=  \norg.openelisglobal.facilitylist.password=
+    \ \norg.openelisglobal.facilitylist.auth= \nfacilitylist.schedule.fixedRate=864000000\n\n#
+    Provider FHIR server placeholders\norg.openelisglobal.providerlist.fhirstore=\norg.openelisglobal.requester.identifier=Practitioner/f9badd80-ab76-11e2-9e96-0800200c9a66\norg.openelisglobal.providerlist.poll.frequency=3600000\norg.openelisglobal.requester.lastName=Dr.
+    Mauritius\norg.openelisglobal.requester.firstName=Felix\norg.openelisglobal.requester.phone=230
+    5123 1234\n\n# Paging properties\norg.openelisglobal.paging.patients.pageSize=99\norg.openelisglobal.paging.results.pageSize=99\norg.openelisglobal.paging.validation.pageSize=99\norg.openelisglobal.paging.displaylist.pageSize=99\n\n#
+    Auto create Programmes from Questionnaire Resources under programs directory\norg.openelisglobal.program.autocreate=true\n\n#
+    Help URLs\norg.openelisglobal.help.manual.url=https://uwdigi.atlassian.net/wiki/spaces/OG/folder/261455874\norg.openelisglobal.help.tutorials.url=https://video.openelis-global.org\norg.openelisglobal.help.release-notes.url=https://roadmap.openelis-global.org\n\n#
+    OCL import\norg.openelisglobal.ocl.import.autocreate=false\norg.openelisglobal.ocl.import.default.testsection=Hematology\norg.openelisglobal.ocl.import.default.sampletype=Whole
+    Blood\n\n# Locale\norg.openelisglobal.odoo.map.testname.locale=en\n\norg.openelisglobal.middleware.test.sync.enabled=true\norg.openelisglobal.middleware.test.sync.url=http://nidan-cis:8081/openelis/catalog/lab-test-definition\n\n\n#
+    OCL cleanup - removes seeded demo tests/panels before import\norg.openelisglobal.ocl.import.cleanup.enabled=true\n#
+    WARNING: force=true will delete ALL tests/panels even with patient data - USE
+    WITH CAUTION\norg.openelisglobal.ocl.import.cleanup.force=true\n\n\n# Middleware
+    Result Sync Configuration\n\norg.openelisglobal.middleware.result.sync.enabled=true\norg.openelisglobal.middleware.result.sync.url=http://nidan-cis:8081/openelis/lab-result\norg.openelisglobal.middleware.result.sync.secret=change-me"
+  server.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Server port="-1" shutdown="SHUTDOWN">
+        <Listener className="org.apache.catalina.startup.VersionLoggerListener" />
+        <Listener className="org.apache.catalina.core.AprLifecycleListener" SSLEngine="on" />
+        <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />
+        <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener" />
+        <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener" />
+
+        <GlobalNamingResources>
+            <Resource name="UserDatabase" auth="Container"
+                      type="org.apache.catalina.UserDatabase"
+                      description="User database that can be updated and saved"
+                      factory="org.apache.catalina.users.MemoryUserDatabaseFactory"
+                      pathname="conf/tomcat-users.xml" />
+        </GlobalNamingResources>
+
+        <Service name="Catalina">
+
+            <!-- HTTP Connector -->
+            <Connector port="8080" protocol="HTTP/1.1"
+                       connectionTimeout="20000"
+                       redirectPort="8443" />
+
+            <Engine name="Catalina" defaultHost="localhost">
+
+                <!-- Add this valve to respect X-Forwarded-* headers from Nginx -->
+                <Valve className="org.apache.catalina.valves.RemoteIpValve"
+                       internalProxies=".*"
+                       remoteIpHeader="x-forwarded-for"
+                       protocolHeader="x-forwarded-proto"
+                       portHeader="x-forwarded-port"
+                       proxiesHeader="x-forwarded-by"
+                />
+
+                <Realm className="org.apache.catalina.realm.LockOutRealm">
+                    <Realm className="org.apache.catalina.realm.UserDatabaseRealm"
+                           resourceName="UserDatabase" />
+                </Realm>
+
+                <Host name="localhost" appBase="webapps"
+                      unpackWARs="true" autoDeploy="true">
+
+                    <!-- OpenELIS Global app -->
+                    <Context docBase="OpenELIS-Global" path="/OpenELIS-Global" logEffectiveWebXml="true">
+                        <Resources cacheMaxSize="102400" />
+                        <Resource auth="Container"
+                                  driverClassName="org.postgresql.Driver"
+                                  maxTotal="20"
+                                  maxIdle="10"
+                                  maxWaitMillis="-1"
+                                  name="jdbc/LimsDS"
+                                  type="javax.sql.DataSource"
+                                  url="${datasource.url}"
+                                  username="${datasource.username}"
+                                  password="${datasource.password}" />
+                    </Context>
+
+                    <Valve className="org.apache.catalina.valves.AccessLogValve" directory="logs"
+                           prefix="localhost_access_log" suffix=".txt"
+                           pattern="%h %l %u %t &quot;%r&quot; %s %b" />
+                </Host>
+            </Engine>
+        </Service>
+    </Server>
+kind: ConfigMap
+metadata:
+  name: openelis-config-files
+  namespace: nidan
