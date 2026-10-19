@@ -9,9 +9,9 @@ metadata:
   namespace: {{ include "nidan.namespace" . }}
 data:
   orthanc.json: |
-{{ .Files.Get "files/orthanc.json" | indent 4 }}
+{{ .Files.Get "files/orthanc/orthanc.json" | indent 4 }}
   webhook.lua: |
-{{ .Files.Get "files/webhook.lua" | indent 4 }}
+{{ .Files.Get "files/orthanc/webhook.lua" | indent 4 }}
 
 ---
 # ------------------------------------------------------------
@@ -62,9 +62,9 @@ metadata:
   namespace: {{ include "nidan.namespace" . }}
 type: Opaque
 stringData:
-  ORTHANC_DB_PASSWORD: "orthanc"
-  ORTHANC_PASSWORD: "nidan"
-  POSTGRES_PASSWORD: "orthanc"
+  ORTHANC_DB_PASSWORD: {{ .Values.orthanc.secrets.dbPassword | quote }}
+  ORTHANC_PASSWORD: {{ .Values.orthanc.secrets.uiPassword | quote }}
+  POSTGRES_PASSWORD: {{ .Values.orthanc.secrets.postgresPassword | quote }}
 
 ---
 # ------------------------------------------------------------

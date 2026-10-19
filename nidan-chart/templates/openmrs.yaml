@@ -1,3 +1,4 @@
+{{- if .Values.openmrs.enabled }}
 # ============================================================
 # 1. OPENMRS CONFIG
 # ============================================================
@@ -17,7 +18,7 @@ data:
   OMRS_CONFIG_AUTO_UPDATE_DATABASE: "true"
   OMRS_CONFIG_CREATE_TABLES: "true"
   OMRS_CONFIG_HAS_CURRENT_OPENMRS_DATABASE: "true"
-  OMRS_JAVA_MEMORY_OPTS: "-Xmx512m -Xms256m"
+  OMRS_JAVA_MEMORY_OPTS: "-Xmx2g -Xms1g"
   _JAVA_OPTIONS: "-Dcsrf.enabled=false"
 
 ---
@@ -141,8 +142,8 @@ spec:
               cpu: "250m"
               memory: "512Mi"
             limits:
-              cpu: "1"
-              memory: "1Gi"
+              cpu: "2"
+              memory: "4Gi"
           volumeMounts:
             - name: openmrs-db-data
               mountPath: /var/lib/mysql
@@ -298,11 +299,11 @@ spec:
                   key: _JAVA_OPTIONS
           resources:
             requests:
-              cpu: "200m"
-              memory: "256Mi"
-            limits:
-              cpu: "1"
+              cpu: "500m"
               memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
           startupProbe:
             httpGet:
               path: /openmrs/
@@ -425,3 +426,5 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+
+{{- end }}

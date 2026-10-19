@@ -16,9 +16,6 @@ spec:
         app: gateway
 
     spec:
-      nodeSelector:
-        gateway: "true"
-
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -43,9 +40,6 @@ spec:
               containerPort: 8443
 
           env:
-            - name: GATEWAY_DOMAIN
-              value: "localhost"
-
             - name: GATEWAY_CERT_SANS
               value: ""
 
@@ -56,7 +50,7 @@ spec:
               value: "/api/OpenELIS-Global/"
 
             - name: DASHBOARD_ODOO_URL
-              value: "http://localhost:8069"
+              value: ""
 
           readinessProbe:
             httpGet:
@@ -83,7 +77,8 @@ metadata:
   name: gateway
   namespace: {{ include "nidan.namespace" . }}
 spec:
-  type: NodePort
+  type: LoadBalancer
+  externalTrafficPolicy: Local
 
   selector:
     app: gateway
@@ -92,14 +87,13 @@ spec:
     - name: http
       port: 80
       targetPort: 80
-      nodePort: 30080
 
     - name: https
       port: 443
       targetPort: 443
-      nodePort: 30443
+      
 
     - name: gateway-8443
       port: 8443
       targetPort: 8443
-      nodePort: 30444
+      

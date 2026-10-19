@@ -1,29 +1,53 @@
 {{- if .Values.superset.enabled }}
+# ============================================================
+# NIDAN Superset
+# ============================================================
+
 # ------------------------------------------------------------
-# 0. ConfigMap — superset-config-files (only if manageConfigFiles)
-#    Set .Values.superset.manageConfigFiles=true to let Helm own
-#    this ConfigMap. Otherwise create it with kubectl (see NOTES).
+# 0a. ConfigMap — superset-config-files (3 files)
+#     scroller.js / nidan-logo.webp / favicon.ico are baked
+#     into the image via Dockerfile, not mounted.
 # ------------------------------------------------------------
-{{- if .Values.superset.manageConfigFiles }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: superset-config-files
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 data:
   superset_config.py: |
-{{ .Files.Get "files/superset_config.py" | indent 4 }}
+{{ .Files.Get "files/superset/superset_config.py" | indent 4 }}
   init_superset_metadata.py: |
-{{ .Files.Get "files/init_superset_metadata.py" | indent 4 }}
-  pager.js: |
-{{ .Files.Get "files/pager.js" | indent 4 }}
-  scroller.js: |
-{{ .Files.Get "files/scroller.js" | indent 4 }}
+{{ .Files.Get "files/superset/init_superset_metadata.py" | indent 4 }}
   docker-entrypoint.sh: |
-{{ .Files.Get "files/docker-entrypoint.sh" | indent 4 }}
+{{ .Files.Get "files/superset/docker-entrypoint.sh" | indent 4 }}
+  scroller.js: |
+{{ .Files.Get "files/superset/scroller.js" | indent 4 }}
 ---
+# ------------------------------------------------------------
+# 0b. ConfigMap — superset-metadata-files
+#     Helm-rendered copies of files/superset/metadata/databases/*.yaml
+#     Seeded into the superset-metadata PVC by the seed-metadata
+#     init container on first boot (and re-synced on upgrades if
+#     the contents change).
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: superset-metadata-files
+  namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
+data:
+{{- range $path, $_ := .Files.Glob "files/superset/metadata/databases/*.yaml" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
 {{- end }}
 
+---
 # ------------------------------------------------------------
 # 1. ConfigMap — non-secret Superset environment
 # ------------------------------------------------------------
@@ -32,6 +56,9 @@ kind: ConfigMap
 metadata:
   name: superset-config
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 data:
   SUPERSET_ADMIN_USERNAME: "nidan"
   SUPERSET_LOAD_EXAMPLES: "no"
@@ -59,6 +86,8 @@ data:
   ODOO_DB_NAME: "nidan"
   ODOO_DB_USER: "nidan"
 
+  SUPERSET_METADATA_DIR: "/app/superset_metadata"
+
 ---
 # ------------------------------------------------------------
 # 2. Secret — Superset secret key, admin password, DB passwords
@@ -68,13 +97,16 @@ kind: Secret
 metadata:
   name: superset-secret
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 type: Opaque
 stringData:
-  SUPERSET_SECRET_KEY: "SBzPML4hj88VNBdKERD70kFGpQ08gjDGozdFeS3GVJfroaamUGWam5G58mDdvM6J"
-  SUPERSET_ADMIN_PASSWORD: "Nidan123"
-  OPENMRS_DB_PASSWORD: "openmrs"
-  OPENELIS_DB_PASSWORD: "clinlims"
-  ODOO_DB_PASSWORD: "nidan"
+  SUPERSET_SECRET_KEY: {{ .Values.superset.secrets.secretKey | quote }}
+  SUPERSET_ADMIN_PASSWORD: {{ .Values.superset.secrets.adminPassword | quote }}
+  OPENMRS_DB_PASSWORD: {{ .Values.superset.secrets.openmrsDbPassword | quote }}
+  OPENELIS_DB_PASSWORD: {{ .Values.superset.secrets.openelisDbPassword | quote }}
+  ODOO_DB_PASSWORD: {{ .Values.superset.secrets.odooDbPassword | quote }}
 
 ---
 # ------------------------------------------------------------
@@ -85,6 +117,9 @@ kind: Service
 metadata:
   name: superset
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 spec:
   type: ClusterIP
   selector:
@@ -103,6 +138,9 @@ kind: Service
 metadata:
   name: superset-nodeport
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 spec:
   type: NodePort
   selector:
@@ -111,7 +149,7 @@ spec:
     - name: http
       port: 8088
       targetPort: 8088
-      nodePort: 30088
+      nodePort: {{ .Values.superset.nodePort }}
 
 ---
 # ------------------------------------------------------------
@@ -122,6 +160,9 @@ kind: Deployment
 metadata:
   name: superset
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 spec:
   replicas: {{ .Values.superset.replicas }}
   strategy:
@@ -155,6 +196,51 @@ spec:
               echo "Waiting for odoo-db:5432..."
               until nc -z odoo-db 5432; do sleep 3; done
               echo "All source DBs reachable."
+
+        # Seed/update the metadata PVC from the ConfigMap.
+        # - Creates the three expected subdirectories (charts/, dashboards/, databases/)
+        # - Copies every YAML from /seed into /app/superset_metadata/databases/
+        #   ONLY if the content differs (cmp -s) — so unchanged files are untouched
+        #   and pod restarts are cheap.
+        # - Preserves whatever Superset writes back into charts/ and dashboards/.
+        - name: seed-metadata
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              TARGET=/app/superset_metadata
+              echo "Preparing $TARGET..."
+              mkdir -p "$TARGET/charts" "$TARGET/dashboards" "$TARGET/databases"
+
+              echo "Seeding databases/*.yaml from ConfigMap..."
+              for f in /seed/*.yaml; do
+                [ -f "$f" ] || continue
+                base=$(basename "$f")
+                dest="$TARGET/databases/$base"
+                if [ ! -f "$dest" ] || ! cmp -s "$f" "$dest"; then
+                  cp "$f" "$dest"
+                  echo "  copied: $base"
+                else
+                  echo "  unchanged: $base"
+                fi
+              done
+
+              chown -R 1000:0 "$TARGET"
+              chmod -R u+rwX,g+rwX "$TARGET"
+              echo "Done. Final tree:"
+              ls -la "$TARGET"
+              ls -la "$TARGET/databases"
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: superset-metadata
+              mountPath: /app/superset_metadata
+            - name: superset-metadata-seed
+              mountPath: /seed
+              readOnly: true
 
         - name: fix-permissions
           image: busybox:1.36
@@ -220,6 +306,10 @@ spec:
             - name: superset-home
               mountPath: /app/superset_home
 
+            # Metadata PVC (seeded by the init container above)
+            - name: superset-metadata
+              mountPath: /app/superset_metadata
+
             - name: superset-config-files
               mountPath: /app/pythonpath/superset_config.py
               subPath: superset_config.py
@@ -241,28 +331,37 @@ spec:
         - name: superset-home
           persistentVolumeClaim:
             claimName: superset-home
+        - name: superset-metadata
+          persistentVolumeClaim:
+            claimName: superset-metadata
+        - name: superset-metadata-seed
+          configMap:
+            name: superset-metadata-files
         - name: superset-config-files
           configMap:
             name: superset-config-files
             defaultMode: 0755
-        - name: superset-metadata
-          persistentVolumeClaim:
-            claimName: superset-metadata
 
 ---
 # ------------------------------------------------------------
-# 5. PVCs — superset home and metadata
+# 5. PVCs
 # ------------------------------------------------------------
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: superset-home
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.superset.storage.storageClass }}
+  storageClassName: {{ .Values.superset.storage.storageClass }}
+  {{- end }}
   resources:
     requests:
-      storage: 10Gi
+      storage: {{ .Values.superset.storage.home }}
 
 ---
 apiVersion: v1
@@ -270,9 +369,15 @@ kind: PersistentVolumeClaim
 metadata:
   name: superset-metadata
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: superset
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.superset.storage.storageClass }}
+  storageClassName: {{ .Values.superset.storage.storageClass }}
+  {{- end }}
   resources:
     requests:
-      storage: 1Gi
+      storage: {{ .Values.superset.storage.metadata }}
 {{- end }}

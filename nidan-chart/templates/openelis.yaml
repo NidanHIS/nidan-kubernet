@@ -1,4 +1,65 @@
 {{- if .Values.openelis.enabled }}
+# ============================================================
+# OpenELIS + NIDAN Integration — Helm template (single file)
+# Includes prerequisites read from files/openelis/:
+#   - server.xml, common.properties  → openelis-config-files ConfigMap
+#   - certs/*                        → openelis-certs Secret
+#   - ocl/*                          → openelis-ocl-import ConfigMap
+# ============================================================
+
+# ------------------------------------------------------------
+# 0a. ConfigMap — openelis-config-files
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openelis-config-files
+  namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
+data:
+  server.xml: |
+{{ .Files.Get "files/openelis/server.xml" | indent 4 }}
+  common.properties: |
+{{ .Files.Get "files/openelis/common.properties" | indent 4 }}
+
+---
+# ------------------------------------------------------------
+# 0b. ConfigMap — openelis-ocl-import (binary zip files)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openelis-ocl-import
+  namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
+binaryData:
+{{- range $path, $_ := .Files.Glob "files/openelis/ocl/*" }}
+  {{ base $path }}: {{ $.Files.GetBytes $path | toString | b64enc }}
+{{- end }}
+
+---
+# ------------------------------------------------------------
+# 0c. Secret — openelis-certs
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openelis-certs
+  namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
+type: Opaque
+data:
+{{- range $path, $_ := .Files.Glob "files/openelis/certs/*" }}
+  {{ base $path }}: {{ $.Files.GetBytes $path | toString | b64enc }}
+{{- end }}
+
+---
 # ------------------------------------------------------------
 # 1. ConfigMap — non-secret environment values
 # ------------------------------------------------------------
@@ -7,6 +68,9 @@ kind: ConfigMap
 metadata:
   name: openelis-config
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
 data:
   OPENELIS_DB_NAME: "clinlims"
   OPENELIS_DB_USER: "clinlims"
@@ -34,10 +98,13 @@ kind: Secret
 metadata:
   name: openelis-secret
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
 type: Opaque
 stringData:
-  OPENELIS_DB_PASSWORD: "clinlims"
-  INTEGRATION_DB_PASSWORD: "nidan"
+  OPENELIS_DB_PASSWORD: {{ .Values.openelis.secrets.dbPassword | quote }}
+  INTEGRATION_DB_PASSWORD: {{ .Values.openelis.secrets.integrationDbPassword | quote }}
 
 ---
 # ------------------------------------------------------------
@@ -48,6 +115,9 @@ kind: Service
 metadata:
   name: openelis-db
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis-db
 spec:
   type: ClusterIP
   selector:
@@ -66,6 +136,9 @@ kind: StatefulSet
 metadata:
   name: openelis-db
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis-db
 spec:
   serviceName: openelis-db
   replicas: {{ .Values.openelis.db.replicas }}
@@ -80,7 +153,7 @@ spec:
       containers:
         - name: openelis-db
           image: "{{ .Values.openelis.db.image.repository }}:{{ .Values.openelis.db.image.tag }}"
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.openelis.db.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: postgres
               containerPort: 5432
@@ -106,27 +179,20 @@ spec:
                   key: OPENELIS_DB_PASSWORD
           readinessProbe:
             exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U postgres -d clinlims
+              command: ["sh", "-c", "pg_isready -U postgres -d clinlims"]
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
           livenessProbe:
             exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U postgres -d clinlims
+              command: ["sh", "-c", "pg_isready -U postgres -d clinlims"]
             initialDelaySeconds: 120
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 5
           resources:
-            requests: { cpu: "500m", memory: "256Mi" }
-            limits:   { cpu: "1",    memory: "1Gi" }
+            {{- toYaml .Values.openelis.db.resources | nindent 12 }}
           volumeMounts:
             - name: openelis-db-data
               mountPath: /var/lib/postgresql/data
@@ -135,9 +201,12 @@ spec:
         name: openelis-db-data
       spec:
         accessModes: ["ReadWriteOnce"]
+        {{- if .Values.openelis.db.storageClass }}
+        storageClassName: {{ .Values.openelis.db.storageClass }}
+        {{- end }}
         resources:
           requests:
-            storage: 20Gi
+            storage: {{ .Values.openelis.db.storage }}
 
 ---
 # ------------------------------------------------------------
@@ -148,6 +217,9 @@ kind: Service
 metadata:
   name: openelis
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
 spec:
   type: ClusterIP
   selector:
@@ -166,6 +238,9 @@ kind: Deployment
 metadata:
   name: openelis
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
 spec:
   replicas: {{ .Values.openelis.backend.replicas }}
   selector:
@@ -247,13 +322,14 @@ spec:
               echo "Preparing /var/lib/openelis-global..."
               for dir in \
                 analyzer branding certs \
-                configuration configuration/backend configuration/frontend \
+                configuration \
+                configuration/backend \
+                configuration/backend/ocl \
                 ocl odoo plugins properties logs; do
                 mkdir -p "/var/lib/openelis-global/$dir"
+                chmod -R 775 /var/lib/openelis-global
                 chown -R 8443:8444 "/var/lib/openelis-global/$dir"
                 chmod -R u+rwX,g+rwX "/var/lib/openelis-global/$dir"
-                chown 8443:8444 /var/lib/openelis-global
-                chmod 775 /var/lib/openelis-global
               done
               echo "Prepared."
           securityContext:
@@ -262,14 +338,40 @@ spec:
             - name: openelis-volume
               mountPath: /var/lib/openelis-global
 
+        - name: seed-ocl-imports
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              TARGET=/var/lib/openelis-global/configuration/backend/ocl
+              mkdir -p "$TARGET"
+              for f in /src/*; do
+                [ -f "$f" ] || continue
+                base=$(basename "$f")
+                if [ ! -f "$TARGET/$base" ] || ! cmp -s "$f" "$TARGET/$base"; then
+                  cp "$f" "$TARGET/$base"
+                  chown 8443:8444 "$TARGET/$base" 2>/dev/null || true
+                  chmod 664        "$TARGET/$base" 2>/dev/null || true
+                  echo "seeded $base"
+                fi
+              done
+              ls -l "$TARGET"
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: openelis-ocl-src
+              mountPath: /src
+              readOnly: true
+            - name: openelis-volume
+              mountPath: /var/lib/openelis-global
+
       containers:
         - name: openelis
           image: "{{ .Values.openelis.backend.image.repository }}:{{ .Values.openelis.backend.image.tag }}"
-          imagePullPolicy: IfNotPresent
-          securityContext:
-              runAsUser: 8443
-              runAsGroup: 8444
-          command: ["/usr/local/tomcat/bin/catalina.sh", "run"]
+          imagePullPolicy: {{ .Values.openelis.backend.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: http
               containerPort: 8080
@@ -354,8 +456,7 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 5
           resources:
-            requests: { cpu: "200m", memory: "256Mi" }
-            limits:   { cpu: "1",    memory: "1Gi" }
+            {{- toYaml .Values.openelis.backend.resources | nindent 12 }}
           volumeMounts:
             - { name: openelis-server-xml,   mountPath: /usr/local/tomcat/conf/server.xml, subPath: server.xml,        readOnly: true }
             - { name: openelis-common-props, mountPath: /run/secrets/common.properties,   subPath: common.properties, readOnly: true }
@@ -382,6 +483,10 @@ spec:
           emptyDir: {}
         - name: openelis-lucene-index
           emptyDir: {}
+        - name: openelis-ocl-src
+          configMap:
+            name: openelis-ocl-import
+            optional: true
 
 ---
 # ------------------------------------------------------------
@@ -392,11 +497,17 @@ kind: PersistentVolumeClaim
 metadata:
   name: openelis-volume
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.openelis.volume.storageClass }}
+  storageClassName: {{ .Values.openelis.volume.storageClass }}
+  {{- end }}
   resources:
     requests:
-      storage: 5Gi
+      storage: {{ .Values.openelis.volume.storage }}
 
 ---
 # ------------------------------------------------------------
@@ -407,6 +518,9 @@ kind: Service
 metadata:
   name: openelis-frontend
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis-frontend
 spec:
   type: ClusterIP
   selector:
@@ -425,6 +539,9 @@ kind: Deployment
 metadata:
   name: openelis-frontend
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: openelis-frontend
 spec:
   replicas: {{ .Values.openelis.frontend.replicas }}
   selector:
@@ -438,7 +555,7 @@ spec:
       containers:
         - name: openelis-frontend
           image: "{{ .Values.openelis.frontend.image.repository }}:{{ .Values.openelis.frontend.image.tag }}"
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.openelis.frontend.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: http
               containerPort: 80
@@ -460,6 +577,5 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 5
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits:   { cpu: "500m", memory: "512Mi" }
+            {{- toYaml .Values.openelis.frontend.resources | nindent 12 }}
 {{- end }}

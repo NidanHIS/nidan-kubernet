@@ -1,0 +1,18 @@
+# OpenMRS database connection (MySQL/MariaDB)
+# sqlalchemy_uri is built from env: OPENMRS_DB_*
+database_name: Nidan Hospital
+sqlalchemy_uri_placeholder: mysql+pymysql://${OPENMRS_DB_USER}:${OPENMRS_DB_PASSWORD}@${OPENMRS_DB_HOST}:${OPENMRS_DB_PORT}/${OPENMRS_DB_NAME}
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: false  # No Celery workers - run queries synchronously
+allow_csv_upload: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+extra: |
+  {
+    "metadata_params": {},
+    "engine_params": {},
+    "metadata_cache_timeout": {},
+    "schemas_allowed_for_csv_upload": []
+  }

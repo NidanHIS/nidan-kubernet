@@ -1,0 +1,18 @@
+# Odoo database connection
+# sqlalchemy_uri is built from env: ODOO_DB_*
+database_name: Nidan Billing
+sqlalchemy_uri_placeholder: postgresql://${ODOO_DB_USER}:${ODOO_DB_PASSWORD}@${ODOO_DB_HOST}:${ODOO_DB_PORT}/${ODOO_DB_NAME}
+cache_timeout: null
+expose_in_sqllab: true
+allow_run_async: false  # No Celery workers - run queries synchronously
+allow_csv_upload: false
+allow_ctas: false
+allow_cvas: false
+allow_dml: false
+extra: |
+  {
+    "metadata_params": {},
+    "engine_params": {},
+    "metadata_cache_timeout": {},
+    "schemas_allowed_for_csv_upload": []
+  }

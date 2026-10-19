@@ -9,7 +9,7 @@ global:
 # ============================================================
 gateway:
   image:
-    repository: utsavd/gateway-proxy
+    repository: utsavd/nidan-proxy
     tag: latest
   replicas: 1
 
@@ -17,6 +17,8 @@ gateway:
 # OpenMRS
 # ============================================================
 openmrs:
+  enabled: true
+
   db:
     image:
       repository: trigonaltechnology/openmrs-db
@@ -51,7 +53,7 @@ odoo:
     replicas: 1
 
 #  ===============================================================
-#Openelis
+# OpenELIS
 openelis:
   enabled: true
 
@@ -59,19 +61,41 @@ openelis:
     image:
       repository: trigonaltechnology/openelis-global-2-database
       tag: latest
+      pullPolicy: IfNotPresent
     replicas: 1
+    storage: 20Gi
+    storageClass: ""                # e.g. "longhorn" for multi-node
+    resources:
+      requests: { cpu: "500m", memory: "1Gi" }
+      limits:   { cpu: "2",    memory: "3Gi" }
 
   backend:
     image:
       repository: trigonaltechnology/openelis-global-2
       tag: latest
+      pullPolicy: IfNotPresent
     replicas: 1
+    resources:
+      requests: { cpu: "500m", memory: "1Gi" }
+      limits:   { cpu: "2",    memory: "3Gi" }
 
   frontend:
     image:
       repository: trigonaltechnology/openelis-global-2-frontend
       tag: latest
+      pullPolicy: IfNotPresent
     replicas: 1
+    resources:
+      requests: { cpu: "100m", memory: "128Mi" }
+      limits:   { cpu: "500m", memory: "512Mi" }
+
+  volume:
+    storage: 5Gi
+    storageClass: ""                # e.g. "longhorn" for multi-node
+
+  secrets:
+    dbPassword: "clinlims"
+    integrationDbPassword: "nidan"
 
 # =================================================================
 #Orthanc
@@ -89,7 +113,11 @@ orthanc:
       repository: postgres
       tag: "15"
     replicas: 1
-
+  secrets:
+    dbPassword: "orthanc"           # ORTHANC_DB_PASSWORD — used by Orthanc to auth to PostgreSQL
+    uiPassword: "nidan"             # ORTHANC_PASSWORD   — used for Orthanc HTTP Basic auth
+    postgresPassword: "orthanc"     # POSTGRES_PASSWORD  — used by the PostgreSQL container
+   
 #=======================================================================
 #Kafka
 #=======================================================================
@@ -137,27 +165,34 @@ nidanIntegrationDb:
     tag: "15"
   replicas: 1
 
-#===============================================================
-#Superset ======================================================
-# ================================================================
+# ============================================================
+# Superset
+# ============================================================
 superset:
   enabled: true
-
-  # Set to true ONLY if you want Helm to own the superset-config-files
-  # ConfigMap. Requires the source files to exist under nidan-chart/files/.
-  # If false (default), you must create the ConfigMap manually:
-  #   kubectl create configmap superset-config-files -n nidan \
-  #     --from-file=superset_config.py=./superset_config.py \
-  #     --from-file=init_superset_metadata.py=./init_superset_metadata.py \
-  #     --from-file=pager.js=./pager.js \
-  #     --from-file=scroller.js=./scroller.js \
-  #     --from-file=docker-entrypoint.sh=./docker-entrypoint.sh
-  manageConfigFiles: false
 
   image:
     repository: trigonaltechnology/superset
     tag: latest
+    pullPolicy: IfNotPresent
   replicas: 1
+
+  # NodePort for LAN access (30088)
+  nodePort: 30088
+
+  # Persistent storage
+  storage:
+    home: 10Gi           # /app/superset_home — SQLite metadata DB, uploads
+    metadata: 1Gi        # /app/superset_metadata — seeded databases/*.yaml + charts/ dashboards/
+    storageClass: ""     # e.g. "longhorn" for multi-node clusters
+
+  # Secrets — override in prod via --set or a values-prod.yaml
+  secrets:
+    secretKey: "SBzPML4hj88VNBdKERD70kFGpQ08gjDGozdFeS3GVJfroaamUGWam5G58mDdvM6J"
+    adminPassword: "Nidan123"
+    openmrsDbPassword: "openmrs"
+    openelisDbPassword: "clinlims"
+    odooDbPassword: "nidan"
 
 
 # ============================================================================================
