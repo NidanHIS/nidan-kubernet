@@ -190,14 +190,13 @@ metadata:
   name: odoo
   namespace: {{ include "nidan.namespace" . }}
 spec:
-  type: NodePort
+  type: LoadBalancer
   selector:
     app: odoo
   ports:
     - name: http
       port: 8069
       targetPort: 8069
-      nodePort: 8069
 
 ---
 # ------------------------------------------------------------
