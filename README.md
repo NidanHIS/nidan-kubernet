@@ -181,7 +181,7 @@ sudo k3s kubectl get pv,pvc -A
 
 Plan persistent storage for application databases, uploaded files, Kafka data, and analytics. For production, use a storage solution with documented backup, restore, capacity, and node-failure behavior.
 
-## 8. Deploy the NidanEHR applications Through Argocd, Helm Chart
+## 8. Deploy the NidanEHR applications Through Argocd with Helm Chart
 
 Repository structure:
 
@@ -250,14 +250,14 @@ disable:
     # 4. Verify the CRD now exists
     kubectl get crd applications.argoproj.io
     
-    Step 2: Expose the Argo CD UI via NodePort
+    #5. Expose the Argo CD UI via NodePort
     kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort"}}'
     kubectl get svc argocd-server -n argocd
 
-    Step 3: Get the Admin Password
+    #6. Get the Admin Password
     kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
     
-    Step 4: Apply Your NIDAN Application
+    #7. Apply Your NIDAN Application
     kubectl apply -f argocd/nidan-app.yaml
     kubeclt get pods -n nidan
 ```
