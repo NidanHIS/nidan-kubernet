@@ -1,4 +1,4 @@
-# NidanEHR on K3s — Ubuntu Server 24.04 LTS
+# NidanEHR on Kubernetes — Ubuntu Server 24.04 LTS
 
 **Intelligent Care · Seamless Records**
 
