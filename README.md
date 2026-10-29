@@ -181,7 +181,7 @@ sudo k3s kubectl get pv,pvc -A
 
 Plan persistent storage for application databases, uploaded files, Kafka data, and analytics. For production, use a storage solution with documented backup, restore, capacity, and node-failure behavior.
 
-## 8. Deploy the NidanEHR applications Through Argocd with Helm Chart
+## 8. Deploy the NidanEHR applications through Argocd with Helm Chart
 
 Repository structure:
 
