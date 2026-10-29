@@ -236,7 +236,6 @@ disable:
 ```
 
 **Deploy NidanEHR through ArgoCD:**
-    ```text
     Installation of ArgoCD:
     # 1. Create the namespace
     ```bash
