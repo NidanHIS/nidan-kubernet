@@ -209,6 +209,7 @@ nidan-kubernet/
 ├── proxy-nginx/                                      ## To build Images of NidanEHR Proxy gateway.
 └── README.md
 
+
 The folder proxy-nginx contain the necessary files with Dockerfile to build the own gateway image for NidanEHR.
 
 ```bash
@@ -224,9 +225,10 @@ sudo k3s ctr -n k8s.io images ls | grep nidan-proxy
 sudo k3s crictl images | grep nidan-proxy
 
 sudo k3s crictl rmi <IMAGE_ID>
+
 ```
 
-**Disable Ingress** As we are using our own gateway image so need to disable ingress
+**Disable Ingress** as we are using our own gateway image so need to disable ingress
 
 ```bash
 vi /etc/rancher/k3s/config.yaml
@@ -234,7 +236,7 @@ disable:
   - traefik
 ```
 
-**Deploy NidanEHR through ArgoCD:**
+**Deploy NidanEHR through ArgoCD**
   Installation of ArgoCD:
 ```bash
     # Create the namespace
