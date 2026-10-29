@@ -209,7 +209,7 @@ nidan-kubernet/
 ├── proxy-nginx/                                      ## To build Images of NidanEHR Proxy gateway.
 └── README.md
 
-**Build Proxy(Gateway) Image for NidanEHR** The folder proxy-nginx contain the necessary files with Dockerfile to build the own gateway
+The folder proxy-nginx contain the necessary files with Dockerfile to build the own gateway image for NidanEHR.
 
 ```bash
 cd proxy-nginx/
