@@ -210,6 +210,7 @@ nidan-kubernet/
 └── README.md
 
 **Build Proxy(Gateway) Image for NidanEHR** The folder proxy-nginx contain the necessary files with Dockerfile to build the own gateway
+
 ```bash
 cd proxy-nginx/
 docker build -t nidan-gateway:latest .
@@ -238,26 +239,26 @@ disable:
 **Deploy NidanEHR through ArgoCD:**
   Installation of ArgoCD:
 ```bash
-    # 1. Create the namespace
+    # Create the namespace
     kubectl create namespace argocd
 
-    # 2. Install Argo CD (this includes the Application CRD)
+    # Install Argo CD (this includes the Application CRD)
     kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
     
-    # 3. Wait for all pods to become ready (may take 1-2 minutes)
+    # Wait for all pods to become ready (may take 1-2 minutes)
     kubectl wait --for=condition=Ready pods --all -n argocd --timeout=600s
     
-    # 4. Verify the CRD now exists
+    # Verify the CRD now exists
     kubectl get crd applications.argoproj.io
     
-    #5. Expose the Argo CD UI via NodePort
+    # Expose the Argo CD UI via NodePort
     kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort"}}'
     kubectl get svc argocd-server -n argocd
 
-    #6. Get the Admin Password
+    # Get the Admin Password
     kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
     
-    #7. Apply Your NIDAN Application
+    # Apply yaml of nidan Application
     kubectl apply -f argocd/nidan-app.yaml
     kubeclt get pods -n nidan
 ```
