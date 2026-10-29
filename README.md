@@ -214,10 +214,8 @@ nidan-kubernet/
 ```bash
 cd proxy-nginx/
 docker build -t nidan-gateway:latest .
-```
-Step to load locally build image to k3s:
 
-```bash
+# Step to load locally build image to k3s:
 docker save nidan-proxy:latest -o /tmp/nidan-proxy.tar
 sudo k3s ctr -n k8s.io images import /tmp/nidan-proxy.tar
 
