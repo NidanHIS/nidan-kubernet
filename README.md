@@ -236,37 +236,31 @@ disable:
 ```
 
 **Deploy NidanEHR through ArgoCD:**
-    Installation of ArgoCD:
+  Installation of ArgoCD:
+```bash
     # 1. Create the namespace
-    ```bash
     kubectl create namespace argocd
-    ```
+
     # 2. Install Argo CD (this includes the Application CRD)
-    ```bash
     kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-    ```
+    
     # 3. Wait for all pods to become ready (may take 1-2 minutes)
-    ```bash
     kubectl wait --for=condition=Ready pods --all -n argocd --timeout=600s
-    ```
+    
     # 4. Verify the CRD now exists
-    ```bash
     kubectl get crd applications.argoproj.io
-    ```
+    
     Step 2: Expose the Argo CD UI via NodePort
-    ```bash
     kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "NodePort"}}'
     kubectl get svc argocd-server -n argocd
-    ```
+
     Step 3: Get the Admin Password
-    ```bash
     kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-    ```
+    
     Step 4: Apply Your NIDAN Application
-    ```bash
     kubectl apply -f argocd/nidan-app.yaml
     kubeclt get pods -n nidan
-    ```
+```
 
 **Specific PODS Deployment of NidanEHR Components** For the deployment of pods with in NidanEHR Namespace a folder nidan-k3s contain the every yaml file of each application
 ```bash
