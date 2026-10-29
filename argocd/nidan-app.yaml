@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nidan
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/utsavdeshar/nidan-kubernet.git'
+    targetRevision: main
+    path: nidan-chart          # The path inside your repo where Chart.yaml lives
+    helm:
+      releaseName: nidan       # Matches your current Helm release name
+      valueFiles:
+        - values.yaml          # Argo CD will use this file from the chart
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: nidan
+  syncPolicy:
+    automated:
+      prune: true              # Delete resources removed from Git
+      selfHeal: true           # Revert manual cluster changes
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true   # Important for adopting existing resources
+  
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[].apiVersion
+        - .spec.volumeClaimTemplates[].kind    
