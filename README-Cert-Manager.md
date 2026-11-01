@@ -11,12 +11,17 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --set crds.enabled=true \
   --wait
 ```
+**Verify all three pods are Ready**
+kubectl -n cert-manager wait --for=condition=Ready pod --all --timeout=180s
+kubectl -n cert-manager get pods
+
 **Prepare YAML files for LetsEncrypt SSL certificates with Cloudflare API TOKEN:**
 ```text
 ├── templates/                                 
 │   ├── certificate.yaml
 │   ├── cert-manager-secret.yaml
-│   ├── clusterissuer.yaml 
+│   ├── clusterissuer.yaml
+
 ```
 ### `templates/certificate.yaml` — Automated TLS Certificate
 
@@ -100,9 +105,79 @@ the `cert-manager` controller pods live.
 
 ```yaml
 {{ required "certManager.clusterIssuer.cloudflare.apiToken is required when createSecret=true" .Values.certManager.clusterIssuer.cloudflare.apiToken | quote }}
+```
+**Update templates/gateway.yaml file to enable cert-manager with domain name.
+```yaml
+{{- /*  Determine whether cert-manager will provide the TLS Secret.
+       Requires: certManager enabled + certificate enabled + a non-empty domain.
+        CERT-MANAGER TLS BRANCH — TEMPORARILY DISABLE */}}
+{{- $useCert := and .Values.certManager.enabled
+                   .Values.certManager.certificate.enabled
+                   .Values.certManager.certificate.domain }}
 
+{{/* {{- $useCert := false}} */}}     {{/* ... */}} block, so Helm ignores it. During the initial setup if no domain name just update to {{- $useCert := false}} and update {{/* ... */}}  to above section
+```
+During the initial setup if no domain name just update to {{- $useCert := false}} and update {{/* ... */}}  to above below section
+{{- /* $useCert := and .Values.certManager.enabled
+                   .Values.certManager.certificate.enabled
+                   .Values.certManager.certificate.domain /* }}
 
-# Verify all three pods are Ready
+**Update domian and details in nidan-chart/values.yaml of certManager section:
+```yaml
+certManager:
+  enabled: true
+
+  clusterIssuer:
+    enabled: true
+    name: letsencrypt-cloudflare
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: "EMAIL_ADDRESS"    
+    privateKeySecretName: letsencrypt-cloudflare-account-key
+    cloudflare:
+      # Secret must exist in the cert-manager namespace (created manually in Step 2)
+      secretName: cloudflare-api-token
+      secretKey: api-token
+      createSecret: true
+      apiToken: "API_TOKEN_OF_CLOUDFLARE"    ##API Token Generated from Cloudflare, AWS.
+  certificate:
+    enabled: true
+    name: gateway-cert
+    secretName: gateway-tls-secret
+    domain: ""           ##Domain name to install letsencrypt cert
+    additionalDnsNames: []      
+```
+** Update/Install app through Helm command:**
+helm upgrade --install nidan . -n nidan -f values.yaml
+
+# Verify all  pods are Ready
 kubectl -n cert-manager wait --for=condition=Ready pod --all --timeout=180s
 kubectl -n cert-manager get pods
+
+kubectl get secret -n cert-manager cloudflare-api-token
+
+Verify after deploy
+# Secret created in cert-manager ns
+kubectl get secret -n cert-manager cloudflare-api-token -o name
+
+# ClusterIssuer Ready
+kubectl get clusterissuer letsencrypt-cloudflare
+
+# Certificate issued
+kubectl get certificate -n nidan -w
+# Wait for READY=True (1–3 min)
+
+# Gateway pod
+kubectl get pods -n nidan
+
+# Real cert served
+kubectl exec -n nidan deploy/gateway -- \
+  openssl x509 -in /etc/letsencrypt/live/localhost/fullchain.pem -noout -subject
+        ##subject=CN = utsavdeshar.com.np
+
+
+
+
+
+
+
 
