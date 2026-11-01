@@ -294,6 +294,57 @@ kubectl -n nidan create configmap openelis-ocl-import \
 ```
   Then only after deploy the openelis.yaml
 
+**Configure SSL with Let’s Encrypt in Kubernetes Using Cert-Manager**
+Step 1: Install cert-manager
+Use Helm to install cert-manager, which handles Let’s Encrypt certificate issuance:
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --set crds.enabled=true \
+  --wait
+```
+**Prepare YAML files for LetsEncrypt SSL certificates with Cloudflare API TOKEN:"
+```text
+├── templates/                                 
+│   ├── certificate.yaml
+│   ├── cert-manager-secret.yaml
+│   ├── clusterissuer.yaml 
+```
+### `templates/certificate.yaml` — Automated TLS Certificate
+
+The `Certificate` resource is the declarative request that tells
+`cert-manager` **what certificate to obtain and where to store it**.
+Once applied, the `cert-manager` controller owns the entire lifecycle:
+
+| Stage | What happens |
+|---|---|
+| **Create** | `cert-manager` creates a `CertificateRequest`, `Order`, and `Challenge` |
+| **Validate** | A temporary `_acme-challenge` TXT record is written via the Cloudflare DNS-01 solver |
+| **Store** | Let's Encrypt signs the cert; `tls.crt` + `tls.key` are written to `gateway-tls-secret` |
+| **Renew** | `cert-manager` renews automatically ~30 days before expiry — no CronJob, no manual step |
+
+The gateway Deployment mounts `gateway-tls-secret` as a volume, so the
+Nginx instance always serves the current certificate. Renewal rotation
+is picked up either by a manual `kubectl rollout restart` or automatically
+via [Stakater Reloader](https://github.com/stakater/Reloader).
+
+**Guarded by domain check:** the template renders only when
+`certManager.certificate.domain` is non-empty — so the chart deploys
+cleanly even before a domain is configured (the gateway falls back to a
+self-signed cert in that case).
+
+# Verify all three pods are Ready
+kubectl -n cert-manager wait --for=condition=Ready pod --all --timeout=180s
+kubectl -n cert-manager get pods
+
+
+
+  
+
 
 
 **Protect healthcare data:** Use authenticated services, TLS, least-privilege topic permissions, audit logging, and approved data-sharing rules. Avoid placing identifiable patient data in broadly accessible topics or logs.
