@@ -307,7 +307,7 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --set crds.enabled=true \
   --wait
 ```
-**Prepare YAML files for LetsEncrypt SSL certificates with Cloudflare API TOKEN:"
+**Prepare YAML files for LetsEncrypt SSL certificates with Cloudflare API TOKEN:**
 ```text
 ├── templates/                                 
 │   ├── certificate.yaml
@@ -336,6 +336,49 @@ via [Stakater Reloader](https://github.com/stakater/Reloader).
 `certManager.certificate.domain` is non-empty — so the chart deploys
 cleanly even before a domain is configured (the gateway falls back to a
 self-signed cert in that case).
+
+### `templates/clusterissuer.yaml` — Let's Encrypt ACME Issuer
+
+A `ClusterIssuer` is the **cluster-wide signing authority** that
+`cert-manager` uses to obtain certificates. This one is configured for
+**Let's Encrypt production** with a **Cloudflare DNS-01** solver.
+
+Once applied, `cert-manager` registers an ACME account with Let's Encrypt
+and stores the account private key in the secret named by
+`privateKeySecretName`. Every `Certificate` in any namespace can then
+reference it with:
+
+```yaml
+issuerRef:
+  name: letsencrypt-cloudflare
+  kind: ClusterIssuer
+
+### `templates/cert-manager-secret.yaml` — Cloudflare API Token Secret
+
+Holds the **Cloudflare API token** that the `ClusterIssuer`'s DNS-01
+solver uses to create and delete `_acme-challenge` TXT records. Without
+this Secret, the `Challenge` resource gets stuck and the `Certificate`
+never reaches `READY=True`.
+
+**Namespace:** `cert-manager` (not `nidan`) — the solver's
+`apiTokenSecretRef` is resolved **in the `cert-manager` namespace**, where
+the `cert-manager` controller pods live.
+
+**Secret type:** `Opaque` — a plain key/value Secret with a single
+`api-token` key containing the token value.
+
+**Guarded rendering:** created only when
+`certManager.enabled: true` **and**
+`certManager.clusterIssuer.cloudflare.createSecret: true`. Set
+`createSecret: false` to manage the Secret out-of-band (e.g., via
+[Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets),
+[External Secrets Operator](https://external-secrets.io/), or a manual
+`kubectl create secret generic ...`).
+
+**Fail-fast validation:** the template uses Helm's `required` function:
+
+```yaml
+{{ required "certManager.clusterIssuer.cloudflare.apiToken is required when createSecret=true" .Values.certManager.clusterIssuer.cloudflare.apiToken | quote }}
 
 # Verify all three pods are Ready
 kubectl -n cert-manager wait --for=condition=Ready pod --all --timeout=180s
