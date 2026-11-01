@@ -294,7 +294,7 @@ kubectl -n nidan create configmap openelis-ocl-import \
 ```
   Then only after deploy the openelis.yaml
 
-**Configure SSL with Let’s Encrypt in Kubernetes Using Cert-Manager**
+## Configure SSL with Let’s Encrypt in Kubernetes Using Cert-Manager
 Step 1: Install cert-manager
 Use Helm to install cert-manager, which handles Let’s Encrypt certificate issuance:
 ```bash
