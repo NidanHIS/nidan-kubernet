@@ -147,15 +147,16 @@ certManager:
     additionalDnsNames: []      
 ```
 ** Update/Install app through Helm command:**
+```bash
 helm upgrade --install nidan . -n nidan -f values.yaml
-
-# Verify all  pods are Ready
+```
+**Verify all  pods are Ready**
+```bash
 kubectl -n cert-manager wait --for=condition=Ready pod --all --timeout=180s
 kubectl -n cert-manager get pods
-
 kubectl get secret -n cert-manager cloudflare-api-token
 
-Verify after deploy
+#Verify after deploy
 # Secret created in cert-manager ns
 kubectl get secret -n cert-manager cloudflare-api-token -o name
 
@@ -174,7 +175,7 @@ kubectl exec -n nidan deploy/gateway -- \
   openssl x509 -in /etc/letsencrypt/live/localhost/fullchain.pem -noout -subject
         ##subject=CN = utsavdeshar.com.np
 
-
+```
 
 
 
