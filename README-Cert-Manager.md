@@ -57,6 +57,22 @@ issuerRef:
   name: letsencrypt-cloudflare
   kind: ClusterIssuer
 
+Why DNS-01 (not HTTP-01)? The gateway is a custom Nginx Deployment
+behind a LoadBalancer — no Ingress controller exists in front of it, so
+HTTP-01 challenges have nowhere to land. DNS-01 sidesteps the routing
+problem entirely: cert-manager writes a _acme-challenge TXT record via
+the Cloudflare API, Let's Encrypt verifies it, and no traffic ever needs
+to reach the gateway during validation.
+
+Cluster-scoped: despite being part of the nidan Helm release, the
+ClusterIssuer has no namespace. It's usable by Certificate resources
+in nidan, cert-manager, or any other namespace.
+
+Guarded rendering: the template renders only when
+certManager.enabled and certManager.clusterIssuer.enabled are both
+true — so the chart stays installable with cert-manager turned off
+(e.g., during bootstrapping without a domain).
+
 ### `templates/cert-manager-secret.yaml` — Cloudflare API Token Secret
 
 Holds the **Cloudflare API token** that the `ClusterIssuer`'s DNS-01
@@ -83,6 +99,7 @@ the `cert-manager` controller pods live.
 
 ```yaml
 {{ required "certManager.clusterIssuer.cloudflare.apiToken is required when createSecret=true" .Values.certManager.clusterIssuer.cloudflare.apiToken | quote }}
+
 
 # Verify all three pods are Ready
 kubectl -n cert-manager wait --for=condition=Ready pod --all --timeout=180s
