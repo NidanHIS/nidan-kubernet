@@ -56,6 +56,7 @@ reference it with:
 issuerRef:
   name: letsencrypt-cloudflare
   kind: ClusterIssuer
+```
 ```text
 Why DNS-01 (not HTTP-01)? The gateway is a custom Nginx Deployment
 behind a LoadBalancer — no Ingress controller exists in front of it, so
