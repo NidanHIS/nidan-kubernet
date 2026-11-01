@@ -8,10 +8,43 @@ global:
 # Gateway
 # ============================================================
 gateway:
+  enabled: true
   image:
     repository: utsavd/nidan-proxy
     tag: latest
   replicas: 1
+
+
+# certbot — DISABLED (replaced by cert-manager)
+# ============================================================
+certbot:
+  enabled: false
+# ============================================================
+# cert-manager (ClusterIssuer + Certificate)
+# Assumes cert-manager itself is installed cluster-wide.
+# ============================================================
+certManager:
+  enabled: true
+
+  clusterIssuer:
+    enabled: true
+    name: letsencrypt-cloudflare
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: "EMAIL_ADDRESS"
+    privateKeySecretName: letsencrypt-cloudflare-account-key
+    cloudflare:
+      # Secret must exist in the cert-manager namespace (created manually in Step 2)
+      secretName: cloudflare-api-token
+      secretKey: api-token
+      createSecret: true
+      apiToken: "API_TOKEN_OF_CLOUDFLARE"
+  certificate:
+    enabled: true
+    name: gateway-cert
+    secretName: gateway-tls-secret
+    domain: ""
+    additionalDnsNames: []
+
 
 # ============================================================
 # OpenMRS

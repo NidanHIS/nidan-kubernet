@@ -1,3 +1,12 @@
+{{- if .Values.gateway.enabled }}
+{{- /*  Determine whether cert-manager will provide the TLS Secret.
+       Requires: certManager enabled + certificate enabled + a non-empty domain.
+        CERT-MANAGER TLS BRANCH — TEMPORARILY DISABLE */}}
+{{- $useCert := and .Values.certManager.enabled
+                   .Values.certManager.certificate.enabled
+                   .Values.certManager.certificate.domain }}
+
+{{/* {{- $useCert := false}} */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,6 +61,26 @@ spec:
             - name: DASHBOARD_ODOO_URL
               value: ""
 
+          volumeMounts:
+            # ------------------------------------------------------------
+            # CERT-MANAGER MOUNT — DISABLED (no domain configured yet)
+            # ------------------------------------------------------------
+            {{- if $useCert }}
+            # Domain configured → project cert-manager's Secret into the
+            # paths that nginx.conf already reads:
+            #   /etc/letsencrypt/live/localhost/fullchain.pem
+            #   /etc/letsencrypt/live/localhost/privkey.pem
+            - name: gateway-tls
+              mountPath: /etc/letsencrypt/live/localhost
+              readOnly: true
+            {{- else }}
+            # No domain yet → writable emptyDir so the image's entrypoint
+            # can generate a self-signed fallback without hitting
+            # "Read-only file system" errors.
+            - name: gateway-tls
+              mountPath: /etc/letsencrypt
+            {{- end }}
+
           readinessProbe:
             httpGet:
               path: /
@@ -69,6 +98,22 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
+
+      volumes:
+        # CERT-MANAGER VOLUME — DISABLED (no domain configured yet)
+        {{- if $useCert }}
+        - name: gateway-tls
+          secret:
+            secretName: {{ .Values.certManager.certificate.secretName }}
+            items:
+              - key: tls.crt
+                path: fullchain.pem
+              - key: tls.key
+                path: privkey.pem
+        {{- else }}
+        - name: gateway-tls
+          emptyDir: {}
+        {{- end }}
 
 ---
 apiVersion: v1
@@ -91,9 +136,8 @@ spec:
     - name: https
       port: 443
       targetPort: 443
-      
 
     - name: gateway-8443
       port: 8443
       targetPort: 8443
-      
+{{- end }}
