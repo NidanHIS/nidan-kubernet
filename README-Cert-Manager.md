@@ -56,7 +56,7 @@ reference it with:
 issuerRef:
   name: letsencrypt-cloudflare
   kind: ClusterIssuer
-
+```text
 Why DNS-01 (not HTTP-01)? The gateway is a custom Nginx Deployment
 behind a LoadBalancer — no Ingress controller exists in front of it, so
 HTTP-01 challenges have nowhere to land. DNS-01 sidesteps the routing
@@ -72,7 +72,7 @@ Guarded rendering: the template renders only when
 certManager.enabled and certManager.clusterIssuer.enabled are both
 true — so the chart stays installable with cert-manager turned off
 (e.g., during bootstrapping without a domain).
-
+```
 ### `templates/cert-manager-secret.yaml` — Cloudflare API Token Secret
 
 Holds the **Cloudflare API token** that the `ClusterIssuer`'s DNS-01
