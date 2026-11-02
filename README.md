@@ -262,7 +262,23 @@ disable:
     kubectl apply -f argocd/nidan-app.yaml
     kubeclt get pods -n nidan
 ```
+**Deploy NidanEHR throuth Helm-Chart:**
+## Install of Helm Chart package
+```bash
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+helm version
+helm list -A
 
+#Install NidanEHR
+cd nidan-kubernet/nidan-chart
+helm lint .     ## To checks  Helm chart for common errors before deploy. The . at the end means "lint the chart in the current directory.
+helm install nidan . -n nidan --create-namespace -f values.yaml
+kubectl get pods -n nidan -o wide    ## To verify and list installed pods
+
+
+helm upgrade --install nidan . -n nidan -f values.yaml    #installs the ndan-chart if it doesn't exist, or upgrades it if it does.
+```
 **Specific PODS Deployment of NidanEHR Components** For the deployment of pods with in NidanEHR Namespace a folder nidan-k3s contain the every yaml file of each application
 ```bash
 kubectl apply -f openmrs.yaml   ------Openmrs folder contain openrms.yaml
