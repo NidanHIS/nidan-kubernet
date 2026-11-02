@@ -1,12 +1,12 @@
 {{- if .Values.gateway.enabled }}
 {{- /*  Determine whether cert-manager will provide the TLS Secret.
        Requires: certManager enabled + certificate enabled + a non-empty domain.
-        CERT-MANAGER TLS BRANCH — TEMPORARILY DISABLE */}}
+        CERT-MANAGER TLS BRANCH — TEMPORARILY DISABLE.
 {{- $useCert := and .Values.certManager.enabled
                    .Values.certManager.certificate.enabled
-                   .Values.certManager.certificate.domain }}
+                   .Values.certManager.certificate.domain */}}
 
-{{/* {{- $useCert := false}} */}}
+{{- $useCert := false}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
