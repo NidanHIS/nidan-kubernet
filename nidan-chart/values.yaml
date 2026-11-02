@@ -24,7 +24,7 @@ certbot:
 # Assumes cert-manager itself is installed cluster-wide.
 # ============================================================
 certManager:
-  enabled: true
+  enabled: false
 
   clusterIssuer:
     enabled: true
