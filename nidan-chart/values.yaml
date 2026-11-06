@@ -14,37 +14,37 @@ gateway:
     tag: latest
   replicas: 1
 
+# ============================================================
+# ACME — HTTP-01 webroot, issued by the acme.sh sidecar
+# The sidecar uses the ACME challenge location that already
+# exists in nginx.conf (/.well-known/acme-challenge/).
+# ============================================================
+acme:
+  enabled: true
+  email: "EMAIL-ADDRESS"        # MUST be a real, monitored email
+  server: "letsencrypt"                 # use "letsencrypt_test" while debugging
+  image:
+    repository: neilpang/acme.sh
+    tag: "3.0.7"                        # pinned — do NOT use "latest"
+  storage:
+    size: 200Mi
+    storageClass: ""                    # "" = cluster default (RWO is fine)
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi"  }
+    limits:   { cpu: "200m", memory: "128Mi" }
 
-# certbot — DISABLED (replaced by cert-manager)
 # ============================================================
-certbot:
-  enabled: false
-# ============================================================
-# cert-manager (ClusterIssuer + Certificate)
-# Assumes cert-manager itself is installed cluster-wide.
+# cert-manager — DISABLED. Kept only because gateway.yaml still
+# reads certManager.certificate.domain as $domain for the
+# acme.sh --issue command. clusterIssuer / cloudflare /
+# additionalDnsNames / secretName are all unused — the templates
+# that referenced them have been deleted.
 # ============================================================
 certManager:
   enabled: false
-
-  clusterIssuer:
-    enabled: true
-    name: letsencrypt-cloudflare
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: "EMAIL_ADDRESS"
-    privateKeySecretName: letsencrypt-cloudflare-account-key
-    cloudflare:
-      # Secret must exist in the cert-manager namespace (created manually in Step 2)
-      secretName: cloudflare-api-token
-      secretKey: api-token
-      createSecret: true
-      apiToken: "API_TOKEN_OF_CLOUDFLARE"
   certificate:
-    enabled: true
-    name: gateway-cert
-    secretName: gateway-tls-secret
-    domain: ""
-    additionalDnsNames: []
-
+    enabled: false
+    domain: "YOUR-DOMAIN"
 
 # ============================================================
 # OpenMRS
@@ -85,8 +85,9 @@ odoo:
       tag: "15"
     replicas: 1
 
-#  ===============================================================
+# ============================================================
 # OpenELIS
+# ============================================================
 openelis:
   enabled: true
 
@@ -97,7 +98,7 @@ openelis:
       pullPolicy: IfNotPresent
     replicas: 1
     storage: 20Gi
-    storageClass: ""                # e.g. "longhorn" for multi-node
+    storageClass: ""
     resources:
       requests: { cpu: "500m", memory: "1Gi" }
       limits:   { cpu: "2",    memory: "3Gi" }
@@ -124,102 +125,88 @@ openelis:
 
   volume:
     storage: 5Gi
-    storageClass: ""                # e.g. "longhorn" for multi-node
+    storageClass: ""
 
   secrets:
     dbPassword: "clinlims"
     integrationDbPassword: "nidan"
 
-# =================================================================
-#Orthanc
-#=================================================================
+# ============================================================
+# Orthanc — disabled
+# ============================================================
 orthanc:
   enabled: true
-
   image:
     repository: orthancteam/orthanc
     tag: "26.6.0"
   replicas: 1
-
   db:
     image:
       repository: postgres
       tag: "15"
     replicas: 1
   secrets:
-    dbPassword: "orthanc"           # ORTHANC_DB_PASSWORD — used by Orthanc to auth to PostgreSQL
-    uiPassword: "nidan"             # ORTHANC_PASSWORD   — used for Orthanc HTTP Basic auth
-    postgresPassword: "orthanc"     # POSTGRES_PASSWORD  — used by the PostgreSQL container
-   
-#=======================================================================
-#Kafka
-#=======================================================================
+    dbPassword: "orthanc"
+    uiPassword: "nidan"
+    postgresPassword: "orthanc"
+
+# ============================================================
+# Kafka — disabled
+# ============================================================
 kafka:
   enabled: true
-
   zookeeper:
     image:
       repository: confluentinc/cp-zookeeper
       tag: "7.5.0"
     replicas: 1
-
   broker:
     image:
       repository: confluentinc/cp-kafka
       tag: "7.5.0"
     replicas: 1
 
-#==========================================================================
-#CIS-OIS ======================================================
-#========================================================================
+# ============================================================
+# CIS-OIS — disabled
+# ============================================================
 nidanCisOis:
   enabled: true
-
   cis:
     image:
       repository: trigonaltechnology/nidan-cis
       tag: latest
     replicas: 1
-
   ois:
     image:
       repository: trigonaltechnology/nidan-ois
       tag: latest
     replicas: 1
 
-#========================================================
-#Nidan-integration=======================================
-#======================================================
+# ============================================================
+# Integration DB — disabled
+# ============================================================
 nidanIntegrationDb:
   enabled: true
-
   image:
     repository: postgres
     tag: "15"
   replicas: 1
 
 # ============================================================
-# Superset
+# Superset — disabled
 # ============================================================
 superset:
   enabled: true
-
   image:
     repository: trigonaltechnology/superset
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
-
-  # NodePort for LAN access (30088)
   nodePort: 30088
-
-  # Persistent storage
   storage:
-    home: 10Gi           # /app/superset_home — SQLite metadata DB, uploads
-    metadata: 1Gi        # /app/superset_metadata — seeded databases/*.yaml + charts/ dashboards/
-    storageClass: ""     # e.g. "longhorn" for multi-node clusters
-
-  # Secrets — override in prod via --set or a values-prod.yaml
+    home: 10Gi
+    metadata: 1Gi
+    storageClass: ""
   secrets:
     secretKey: "SBzPML4hj88VNBdKERD70kFGpQ08gjDGozdFeS3GVJfroaamUGWam5G58mDdvM6J"
     adminPassword: "Nidan123"
@@ -227,19 +214,15 @@ superset:
     openelisDbPassword: "clinlims"
     odooDbPassword: "nidan"
 
-
-# ============================================================================================
-#Dhis2 
-#======================================================================
-
+# ============================================================
+# DHIS2 — disabled
+# ============================================================
 nidanDhis2:
   enabled: true
-
   image:
     repository: trigonaltechnology/nidan-dhis2-integration
     tag: latest
   replicas: 1
-
   db:
     image:
       repository: mysql

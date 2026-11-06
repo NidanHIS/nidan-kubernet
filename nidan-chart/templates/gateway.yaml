@@ -1,119 +1,194 @@
 {{- if .Values.gateway.enabled }}
-{{- /*  Determine whether cert-manager will provide the TLS Secret.
-       Requires: certManager enabled + certificate enabled + a non-empty domain.
-        CERT-MANAGER TLS BRANCH — TEMPORARILY DISABLE.
-{{- $useCert := and .Values.certManager.enabled
-                   .Values.certManager.certificate.enabled
-                   .Values.certManager.certificate.domain */}}
+{{- $domain := .Values.certManager.certificate.domain | default "" }}
+{{- $gwEnv  := .Values.gateway.env | default dict }}
+{{- /*
+  cert-manager (Secret-based) path has been removed — the acme.sh sidecar
+  is the only issuance path. If you ever re-enable cert-manager, restore the
+  $useCert variable and the {{- if $useCert }} branches in volumeMounts/volumes.
+*/ -}}
 
-{{- $useCert := false}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gateway
   namespace: {{ include "nidan.namespace" . }}
+  labels:
+    app.kubernetes.io/part-of: nidan
+    app.kubernetes.io/component: gateway
 spec:
   replicas: {{ .Values.gateway.replicas }}
-
+  # Recreate is required: gateway-tls PVC is ReadWriteOnce, so a
+  # RollingUpdate with maxSurge would deadlock on multi-node clusters
+  # ("Multi-Attach error"). Downtime is ~15-30s — acceptable for a
+  # single-replica gateway. Switch to RollingUpdate only after moving
+  # the PVC to ReadWriteMany (Longhorn / NFS).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: gateway
-
   template:
     metadata:
       labels:
         app: gateway
-
     spec:
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector:
-            matchLabels:
-              app: gateway
+      # Required: acme sidecar needs to SIGHUP the nginx master
+      # that runs in the gateway container. Do not remove.
+      shareProcessNamespace: true
 
       containers:
         - name: gateway
           image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
-          imagePullPolicy: IfNotPresent
-
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy | default "IfNotPresent" }}
           ports:
-            - name: http
-              containerPort: 80
-
-            - name: https
-              containerPort: 443
-
-            - name: gateway-8443
-              containerPort: 8443
-
+            - { name: http,         containerPort: 80   }
+            - { name: https,        containerPort: 443  }
+            - { name: gateway-8443, containerPort: 8443 }
           env:
-            - name: GATEWAY_CERT_SANS
-              value: ""
-
-            - name: OPENELIS_DOMAIN
-              value: ""
-
-            - name: OPENELIS_CONTEXT_PATH
-              value: "/api/OpenELIS-Global/"
-
-            - name: DASHBOARD_ODOO_URL
-              value: ""
-
+            # GATEWAY_CERT_SANS / OPENELIS_DOMAIN / DASHBOARD_ODOO_URL are
+            # consumed by docker-entrypoint.sh for the dashboard templates.
+            # $gwEnv protects against the env block being absent in values.yaml.
+            - { name: GATEWAY_CERT_SANS,     value: {{ $gwEnv.certSans         | default "" | quote }} }
+            - { name: OPENELIS_DOMAIN,       value: {{ $gwEnv.openelisDomain   | default "" | quote }} }
+            - { name: OPENELIS_CONTEXT_PATH, value: "/api/OpenELIS-Global/" }
+            - { name: DASHBOARD_ODOO_URL,    value: {{ $gwEnv.dashboardOdooUrl | default "" | quote }} }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
           volumeMounts:
-            # ------------------------------------------------------------
-            # CERT-MANAGER MOUNT — DISABLED (no domain configured yet)
-            # ------------------------------------------------------------
-            {{- if $useCert }}
-            # Domain configured → project cert-manager's Secret into the
-            # paths that nginx.conf already reads:
-            #   /etc/letsencrypt/live/localhost/fullchain.pem
-            #   /etc/letsencrypt/live/localhost/privkey.pem
-            - name: gateway-tls
-              mountPath: /etc/letsencrypt/live/localhost
-              readOnly: true
-            {{- else }}
-            # No domain yet → writable emptyDir so the image's entrypoint
-            # can generate a self-signed fallback without hitting
-            # "Read-only file system" errors.
-            - name: gateway-tls
-              mountPath: /etc/letsencrypt
-            {{- end }}
-
+            - { name: gateway-tls,  mountPath: /etc/letsencrypt }
+            - { name: acme-webroot, mountPath: /var/www/certbot }
+          startupProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
           readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 10
-            periodSeconds: 30
-            timeoutSeconds: 10
+            httpGet: { path: /, port: 80 }
+            periodSeconds: 15
+            timeoutSeconds: 5
             failureThreshold: 3
-
           livenessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 30
+            httpGet: { path: /, port: 80 }
             periodSeconds: 30
             timeoutSeconds: 10
-            failureThreshold: 3
+            failureThreshold: 5
+
+        - name: acme
+          image: "{{ .Values.acme.image.repository }}:{{ .Values.acme.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: DOMAIN,         value: {{ $domain | quote }} }
+            - { name: ACME_EMAIL,     value: {{ .Values.acme.email | quote }} }
+            - { name: ACME_SERVER,    value: {{ .Values.acme.server | quote }} }
+            - { name: LE_CONFIG_HOME, value: /etc/letsencrypt/.acme }
+          resources:
+            {{- toYaml .Values.acme.resources | nindent 12 }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              # No `set -e` — a failed sub-command must not kill the container.
+
+              if [ -z "${DOMAIN}" ]; then
+                echo "[acme] DOMAIN empty — sleeping instead of crashlooping"
+                exec sleep infinity
+              fi
+
+              mkdir -p "${LE_CONFIG_HOME}" /var/www/certbot \
+                       /etc/letsencrypt/live/localhost 2>/dev/null || true
+
+              # Signal the nginx MASTER in the gateway container.
+              # Use /proc/PID/comm (kernel-set name) NOT cmdline: this
+              # script's own args contain the string "nginx: master",
+              # so a cmdline-only match makes the shell SIGHUP itself
+              # -> exit 129 (crashloop). Only real nginx has comm="nginx".
+              reload_nginx() {
+                me=$$
+                for dir in /proc/[0-9]*; do
+                  pid=${dir#/proc/}
+                  [ "$pid" = "$me" ] && continue
+                  [ -r "$dir/comm" ] || continue
+                  [ "$(cat "$dir/comm" 2>/dev/null)" = "nginx" ] || continue
+                  if tr '\0' ' ' < "$dir/cmdline" 2>/dev/null | grep -q 'nginx: master'; then
+                    kill -HUP "$pid" 2>/dev/null && return 0
+                  fi
+                done
+                return 1
+              }
+
+              # True only when the on-disk cert was issued by Let's Encrypt,
+              # not by generate-selfsigned.sh. Every step is guarded so a
+              # missing openssl or an unreadable cert cannot cause a false
+              # negative that would force-issue every 12h (rate-limit burn).
+              is_letsencrypt() {
+                command -v openssl >/dev/null 2>&1 || return 1
+                [ -f /etc/letsencrypt/live/localhost/fullchain.pem ] || return 1
+                issuer=$(openssl x509 -in /etc/letsencrypt/live/localhost/fullchain.pem \
+                         -noout -issuer 2>/dev/null) || return 1
+                echo "$issuer" | grep -qi "Let's Encrypt"
+              }
+
+              acme.sh --register-account -m "${ACME_EMAIL}" \
+                      --server "${ACME_SERVER}" \
+                      --home "${LE_CONFIG_HOME}" 2>&1 || true
+
+              while true; do
+                ts=$(date -u +%FT%TZ 2>/dev/null || echo now)
+
+                if is_letsencrypt; then
+                  echo "[acme] $ts cert is LE — running cron"
+                  acme.sh --cron --home "${LE_CONFIG_HOME}" 2>&1 || true
+                else
+                  echo "[acme] $ts cert missing or self-signed — issuing"
+                  if acme.sh --issue \
+                       -d "${DOMAIN}" \
+                       --webroot /var/www/certbot \
+                       --server  "${ACME_SERVER}" \
+                       --home    "${LE_CONFIG_HOME}" \
+                       --force 2>&1; then
+                    echo "[acme] $ts issue OK"
+                    acme.sh --install-cert -d "${DOMAIN}" \
+                      --home "${LE_CONFIG_HOME}" \
+                      --key-file       /etc/letsencrypt/live/localhost/privkey.pem \
+                      --fullchain-file /etc/letsencrypt/live/localhost/fullchain.pem \
+                      --reloadcmd      "true" 2>&1 \
+                      || echo "[acme] $ts install-cert FAILED"
+                  else
+                    echo "[acme] $ts issue FAILED — check port 80 and DNS, retry in 12h"
+                  fi
+                fi
+
+                reload_nginx && echo "[acme] $ts nginx reloaded" \
+                              || echo "[acme] $ts nginx reload skipped"
+                sleep 12h
+              done
+          # No probes on this container: it serves no traffic, and probes
+          # on an exec container during --issue cause "task not found" and
+          # "timed out after 1s" noise. restartPolicy handles crashes.
+          volumeMounts:
+            - { name: gateway-tls,  mountPath: /etc/letsencrypt }
+            - { name: acme-webroot, mountPath: /var/www/certbot }
 
       volumes:
-        # CERT-MANAGER VOLUME — DISABLED (no domain configured yet)
-        {{- if $useCert }}
         - name: gateway-tls
-          secret:
-            secretName: {{ .Values.certManager.certificate.secretName }}
-            items:
-              - key: tls.crt
-                path: fullchain.pem
-              - key: tls.key
-                path: privkey.pem
-        {{- else }}
-        - name: gateway-tls
+          persistentVolumeClaim: { claimName: gateway-tls }
+        - name: acme-webroot
           emptyDir: {}
-        {{- end }}
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gateway-tls
+  namespace: {{ include "nidan.namespace" . }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.acme.storage.size }}
+  {{- if .Values.acme.storage.storageClass }}
+  storageClassName: {{ .Values.acme.storage.storageClass }}
+  {{- end }}
 
 ---
 apiVersion: v1
@@ -124,20 +199,10 @@ metadata:
 spec:
   type: LoadBalancer
   externalTrafficPolicy: Local
-
   selector:
     app: gateway
-
   ports:
-    - name: http
-      port: 80
-      targetPort: 80
-
-    - name: https
-      port: 443
-      targetPort: 443
-
-    - name: gateway-8443
-      port: 8443
-      targetPort: 8443
+    - { name: http,         port: 80,   targetPort: 80   }
+    - { name: https,        port: 443,  targetPort: 443  }
+    - { name: gateway-8443, port: 8443, targetPort: 8443 }
 {{- end }}
