@@ -106,26 +106,11 @@ the `cert-manager` controller pods live.
 ```yaml
 {{ required "certManager.clusterIssuer.cloudflare.apiToken is required when createSecret=true" .Values.certManager.clusterIssuer.cloudflare.apiToken | quote }}
 ```
-**Update templates/gateway.yaml file to enable cert-manager with domain name.
-```yaml
-{{- /*  Determine whether cert-manager will provide the TLS Secret.
-       Requires: certManager enabled + certificate enabled + a non-empty domain.
-        CERT-MANAGER TLS BRANCH — TEMPORARILY DISABLE */}}
-{{- $useCert := and .Values.certManager.enabled
-                   .Values.certManager.certificate.enabled
-                   .Values.certManager.certificate.domain }}
-
-{{/* {{- $useCert := false}} */}}     {{/* ... */}} block, so Helm ignores it. During the initial setup if no domain name just update to {{- $useCert := false}} and update {{/* ... */}}  to above section
-```
-During the initial setup if no domain name just update to {{- $useCert := false}} and update {{/* ... */}}  to above below section
-{{- /* $useCert := and .Values.certManager.enabled
-                   .Values.certManager.certificate.enabled
-                   .Values.certManager.certificate.domain /* }}
 
 **Update domian and details in nidan-chart/values.yaml of certManager section:
 ```yaml
 certManager:
-  enabled: true
+  enabled: true       ## Set false if no domain during initial running of application
 
   clusterIssuer:
     enabled: true
