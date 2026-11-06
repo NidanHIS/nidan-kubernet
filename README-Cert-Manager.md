@@ -1,4 +1,4 @@
-## Configure SSL with Let’s Encrypt in Kubernetes Using Cert-Manager
+## Configure SSL with Let’s Encrypt in Kubernetes Using Cert-Manager DNS-01
 Step 1: Install cert-manager
 Use Helm to install cert-manager, which handles Let’s Encrypt certificate issuance:
 ```bash
@@ -176,7 +176,28 @@ kubectl exec -n nidan deploy/gateway -- \
         ##subject=CN = utsavdeshar.com.np
 
 ```
+## Configure SSL with Let’s Encrypt in Kubernetes Using http-01
+1. Git clone the branch cert/httpd-01
+   git clone https://github.com/NidanHIS/nidan-kubernet.git
 
+2. Update email and domin to values.yaml.
+   acme:
+     email: "EMAIL-ADDRESS"
+   certManager:
+     certManager:
+       domain: "YOUR-DOMAIN"
+3. Install NidanEHR with SSL
+   helm upgrade --install nidan . -n nidan -f values.yaml
+4. Verify the served cert:
+   kubectl -n nidan logs -l app=gateway -c acme -f
+   kubectl -n nidan exec deploy/gateway -c gateway -- \
+   openssl x509 -in /etc/letsencrypt/live/localhost/fullchain.pem -noout -issuer -subject -dates
+      # Expect: issuer=Let's Encrypt, subject=CN=k3s.nidanehr.com
+   curl -sv https://k3s.nidanehr.com 2>&1 | grep -E 'issuer|subject|expire'
+
+   
+
+   
 
 
 
