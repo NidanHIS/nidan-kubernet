@@ -163,23 +163,29 @@ kubectl exec -n nidan deploy/gateway -- \
 ```
 ## Configure SSL with Let’s Encrypt in Kubernetes Using http-01
 1. Git clone the branch cert/httpd-01
+   ```bash
    git clone https://github.com/NidanHIS/nidan-kubernet.git
-
-2. Update email and domin to values.yaml.
+   ```
+3. Update email and domin to values.yaml.
+   ```text
    acme:
      email: "EMAIL-ADDRESS"
    certManager:
      certManager:
        domain: "YOUR-DOMAIN"
-3. Install NidanEHR with SSL
+   ```
+5. Install NidanEHR with SSL
+   ```bash
    helm upgrade --install nidan . -n nidan -f values.yaml
-4. Verify the served cert:
+   ```
+7. Verify the served cert:
+   ```bash
    kubectl -n nidan logs -l app=gateway -c acme -f
    kubectl -n nidan exec deploy/gateway -c gateway -- \
    openssl x509 -in /etc/letsencrypt/live/localhost/fullchain.pem -noout -issuer -subject -dates
       # Expect: issuer=Let's Encrypt, subject=CN=k3s.nidanehr.com
    curl -sv https://k3s.nidanehr.com 2>&1 | grep -E 'issuer|subject|expire'
-
+   ```
    
 
    
